@@ -380,7 +380,12 @@ void CopyPlacements(uint8_t* allocator, uint8_t* packer) {
     }
 }
 
+// Rendered-frame counter: repack() runs once per frame while shadows render,
+// which is every gameplay frame. Used by the preset benchmark.
+volatile LONG64 g_frameCount = 0;
+
 void __fastcall RepackHook(void* self) {
+    InterlockedIncrement64(&g_frameCount);
     auto a = static_cast<uint8_t*>(self);
     auto packer = *reinterpret_cast<uint8_t**>(a + 0x30);
     int W = *reinterpret_cast<int*>(packer), H = *reinterpret_cast<int*>(packer + 4);
@@ -850,6 +855,7 @@ struct Config {
     int pollMs = 100;
     bool logShadowAllocs = false;  // [Debug]; read at startup only
     bool logFreeCamInput = false;  // [Debug]; read at startup only
+    int benchSettleMs = 2000, benchMeasureMs = 5000;  // [Debug] BenchmarkSettleMs / BenchmarkMeasureMs
     int lightShadowScale = 1;      // [Shadows]; live
     float freeCamLook = 1.0f;      // [FreeCamera] LookSensitivity; live
     int freeCamKey = VK_F7;        // [FreeCamera] ToggleKey; live
@@ -1048,6 +1054,8 @@ Config LoadConfig(const std::wstring& path) {
             bool b;
             if (Lower(key) == "logshadowallocs" && ParseBool(val, &b)) cfg.logShadowAllocs = b;
             else if (Lower(key) == "logfreecaminput" && ParseBool(val, &b)) cfg.logFreeCamInput = b;
+            else if (Lower(key) == "benchmarksettlems") cfg.benchSettleMs = (std::max)(0, atoi(val.c_str()));
+            else if (Lower(key) == "benchmarkmeasurems") cfg.benchMeasureMs = (std::max)(50, atoi(val.c_str()));
             else Log("ini:%d unknown debug setting '%s'", lineNo, key.c_str());
         } else if (section == "preset" && (Lower(key) == "group" || Lower(key) == "description")) {
             // Metadata, not a tweakable (tweakable names always contain "Category:").
@@ -1114,6 +1122,21 @@ bool SetPresetActiveLocked(const std::string& name, bool on) {
     });
     return true;
 }
+
+// Preset benchmark: Stock and each Quality preset in turn, 2 s to settle then
+// 5 s of frame counting each; the user's presets are restored afterwards.
+// Guarded by g_knownLock.
+struct Benchmark {
+    bool running = false;
+    bool requested = false;
+    std::vector<std::string> stages;  // "" = Stock (no Quality preset)
+    int stage = -1;
+    ULONGLONG stageStart = 0;
+    LONG64 framesAtMeasure = 0;
+    bool measuring = false;
+    std::vector<std::string> savedPresets;
+    std::vector<std::pair<std::string, float>> results;  // name ("Stock" or preset), average fps
+} g_bench;
 
 std::string JoinActivePresetsLocked() {
     std::string s;
@@ -1509,6 +1532,59 @@ DWORD WINAPI Worker(LPVOID) {
                 for (int i = 0; i <= next; ++i) Beep(660, 60), Sleep(40);  // one beep per position
                 if (next < 0) Beep(330, 150);
             }
+        }
+
+        // Preset benchmark (started from the overlay).
+        {
+            const ULONGLONG kSettleMs = base.benchSettleMs, kMeasureMs = base.benchMeasureMs;
+            AcquireSRWLockExclusive(&g_knownLock);
+            auto& b = g_bench;
+            auto switchTo = [&](const std::string& quality) {
+                for (auto& d : g_baseShared.presets)
+                    if (Lower(d.group) == "quality") SetPresetActiveLocked(d.name, false);
+                if (!quality.empty()) SetPresetActiveLocked(quality, true);
+                g_modOff = false;
+                InterlockedIncrement(&g_uiVersion);
+            };
+            const ULONGLONG now = GetTickCount64();
+            if (b.requested && !b.running) {
+                b.requested = false;
+                b.running = true;
+                b.results.clear();
+                b.savedPresets = g_activePresets;
+                b.stages = {""};
+                for (auto& d : g_baseShared.presets)
+                    if (Lower(d.group) == "quality") b.stages.push_back(d.name);
+                b.stage = 0;
+                b.measuring = false;
+                b.stageStart = now;
+                switchTo(b.stages[0]);
+                Log("Benchmark: %zu stages (Stock + Quality presets), %.1f s each", b.stages.size(),
+                    (kSettleMs + kMeasureMs) / 1000.0);
+            } else if (b.running) {
+                if (!b.measuring && now - b.stageStart >= kSettleMs) {
+                    b.measuring = true;
+                    b.framesAtMeasure = g_frameCount;
+                } else if (b.measuring && now - b.stageStart >= kSettleMs + kMeasureMs) {
+                    const double secs = (now - b.stageStart - kSettleMs) / 1000.0;
+                    const float fps = (float)((g_frameCount - b.framesAtMeasure) / secs);
+                    const std::string name = b.stages[b.stage].empty() ? "Stock" : b.stages[b.stage];
+                    b.results.push_back({name, fps});
+                    Log("Benchmark: %-12s %.1f fps", name.c_str(), fps);
+                    if (++b.stage < (int)b.stages.size()) {
+                        b.measuring = false;
+                        b.stageStart = now;
+                        switchTo(b.stages[b.stage]);
+                    } else {
+                        b.running = false;
+                        g_activePresets.clear();
+                        for (auto& n : b.savedPresets) SetPresetActiveLocked(n, true);
+                        InterlockedIncrement(&g_uiVersion);
+                        Log("Benchmark done; presets restored: %s", JoinActivePresetsLocked().c_str());
+                    }
+                }
+            }
+            ReleaseSRWLockExclusive(&g_knownLock);
         }
 
         if (g_uiVersion != lastUiVersion) {  // overlay edit/reset/save, preset or A/B change
@@ -1907,6 +1983,34 @@ extern "C" int __cdecl AWT_PhotoAction(int action) {
         case AWT_PHOTO_TIME_PLUS_HOUR: QueuePress(kTimeForwardHour); break;
         default: return 0;
     }
+    return 1;
+}
+
+extern "C" int __cdecl AWT_StartBenchmark(void) {
+    AcquireSRWLockExclusive(&g_knownLock);
+    int ok = !g_bench.running && g_largeSlotFix;  // needs the repack hook to count frames
+    if (ok) g_bench.requested = true;
+    ReleaseSRWLockExclusive(&g_knownLock);
+    return ok;
+}
+
+extern "C" int __cdecl AWT_GetBenchmark(AwtBenchmark* out) {
+    if (!out) return 0;
+    AcquireSRWLockShared(&g_knownLock);
+    memset(out, 0, sizeof(*out));
+    out->available = g_largeSlotFix;
+    out->running = g_bench.running || g_bench.requested;
+    out->stage = g_bench.stage;
+    out->stages = (int)g_bench.stages.size();
+    if (g_bench.running && g_bench.stage >= 0 && g_bench.stage < (int)g_bench.stages.size())
+        snprintf(out->current, sizeof(out->current), "%s",
+                 g_bench.stages[g_bench.stage].empty() ? "Stock" : g_bench.stages[g_bench.stage].c_str());
+    out->resultCount = (int)(std::min)(g_bench.results.size(), (size_t)8);
+    for (int i = 0; i < out->resultCount; ++i) {
+        snprintf(out->results[i].name, sizeof(out->results[i].name), "%s", g_bench.results[i].first.c_str());
+        out->results[i].fps = g_bench.results[i].second;
+    }
+    ReleaseSRWLockShared(&g_knownLock);
     return 1;
 }
 

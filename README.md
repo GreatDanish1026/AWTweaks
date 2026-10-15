@@ -95,6 +95,22 @@ Presets: `[Preset:Name]` sections with optional `Group=` (one active preset per
 group) and `Description=`. `Preset=` takes a comma list; F9 cycles the Quality
 group.
 
+| | Stock | Ultra+ | Cinematic |
+|---|---|---|---|
+| Sun cascade resolution | 2048 | 3072 | 4096 |
+| Every object casts sun shadows | – | – | yes |
+| HBAO small-scale / exponent | 1.1 / 2.1 | 1.4 / 2.4 | 1.4 / 2.4 |
+| Fog and rain resolution | half | full | full |
+| Light-shaft blur / intensity | 1 / 0.55 | 2 / 0.55 | 2 / 0.7 |
+| Small foliage draw distance | 60 m | 90 m | 240 m (cutscene value) |
+| `LOD:LOD detail` (switch distance × size) | 0.3 | 0.5 | 1.0 |
+| High-quality skinning range | 16 m | 20 m | 20 m |
+
+**Measure FPS of each** (overlay, Quality group) runs Stock and every Quality
+preset for 2 s settle + 5 s measure, counting rendered frames in the repack
+hook, then restores the user's presets. It only shows a cost when the frame
+rate isn't capped (V-Sync / Reflex / driver limiter).
+
 The ImGui calls go through ReShade's function table, which is MSVC-built:
 `GetContentRegionAvail` returns `ImVec2` via a hidden pointer there, so the
 add-on (GNU ABI) calls that entry with the MSVC convention (`AvailWidth()`).

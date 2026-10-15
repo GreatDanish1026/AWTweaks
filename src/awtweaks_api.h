@@ -3,7 +3,7 @@
 #pragma once
 #include <cstdint>
 
-#define AWT_API_VERSION 3
+#define AWT_API_VERSION 4
 
 enum AwtType : int32_t { AWT_BOOL = 0, AWT_FLOAT = 1, AWT_COLOR = 3 };  // others: read-only
 enum AwtSource : int32_t { AWT_SRC_NONE = 0, AWT_SRC_TWEAKS = 1, AWT_SRC_PRESET = 2, AWT_SRC_OVERLAY = 3 };
@@ -45,6 +45,19 @@ enum AwtPhotoAction : int32_t {
     AWT_PHOTO_TIME_PLUS_HOUR = 6,
 };
 
+// v4: preset benchmark.
+struct AwtBenchmark {
+    int32_t available;   // needs AtlasScale=2 (frames are counted in the shadow packer hook)
+    int32_t running;
+    int32_t stage, stages;
+    char current[64];    // preset being measured ("Stock" = no Quality preset)
+    int32_t resultCount;
+    struct {
+        char name[64];
+        float fps;       // average over 5 s after a 2 s settle
+    } results[8];
+};
+
 struct AwtPreset {
     char name[64];
     char group[32];          // e.g. "Quality", "Look"; "" = combinable with anything
@@ -76,4 +89,7 @@ typedef int(__cdecl* PFN_AWT_SaveStartupPresets)(void);
 typedef int(__cdecl* PFN_AWT_GetPhoto)(AwtPhoto* out);
 typedef int(__cdecl* PFN_AWT_PhotoAction)(int action);   // AwtPhotoAction
 typedef int(__cdecl* PFN_AWT_SetTimeScale)(float scale);  // 0.01 .. 4
+// v4: runs Stock + each Quality preset, 7 s each, then restores the presets.
+typedef int(__cdecl* PFN_AWT_StartBenchmark)(void);
+typedef int(__cdecl* PFN_AWT_GetBenchmark)(AwtBenchmark* out);
 }

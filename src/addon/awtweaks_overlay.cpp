@@ -38,9 +38,11 @@ struct Api {
     PFN_AWT_GetPhoto photo = nullptr;
     PFN_AWT_PhotoAction photoAction = nullptr;
     PFN_AWT_SetTimeScale setTimeScale = nullptr;
+    PFN_AWT_StartBenchmark startBench = nullptr;
+    PFN_AWT_GetBenchmark getBench = nullptr;
     bool ok() const {
         return status && snapshot && set && reset && save && presets && setPreset && setModOn && saveStartup &&
-               photo && photoAction && setTimeScale;
+               photo && photoAction && setTimeScale && startBench && getBench;
     }
 } g_api;
 
@@ -67,6 +69,8 @@ bool ResolveApi() {
     g_api.photo = reinterpret_cast<PFN_AWT_GetPhoto>(GetProcAddress(m, "AWT_GetPhoto"));
     g_api.photoAction = reinterpret_cast<PFN_AWT_PhotoAction>(GetProcAddress(m, "AWT_PhotoAction"));
     g_api.setTimeScale = reinterpret_cast<PFN_AWT_SetTimeScale>(GetProcAddress(m, "AWT_SetTimeScale"));
+    g_api.startBench = reinterpret_cast<PFN_AWT_StartBenchmark>(GetProcAddress(m, "AWT_StartBenchmark"));
+    g_api.getBench = reinterpret_cast<PFN_AWT_GetBenchmark>(GetProcAddress(m, "AWT_GetBenchmark"));
     return g_api.ok();
 }
 
@@ -180,6 +184,23 @@ void DrawDescription(const char* text) {
     ImGui::Unindent(ImGui::GetFrameHeight() + 4.0f);
 }
 
+AwtBenchmark g_bench{};
+
+// "142 fps (-9%)" next to a Quality choice, once the benchmark has measured it.
+void DrawFps(const char* name) {
+    float base = 0, mine = 0;
+    for (int i = 0; i < g_bench.resultCount; ++i) {
+        if (!strcmp(g_bench.results[i].name, "Stock")) base = g_bench.results[i].fps;
+        if (!strcmp(g_bench.results[i].name, name)) mine = g_bench.results[i].fps;
+    }
+    if (mine <= 0) return;
+    ImGui::SameLine();
+    if (base > 0 && strcmp(name, "Stock"))
+        ImGui::TextDisabled("%.0f fps (%+.0f%%)", mine, (mine / base - 1.0f) * 100.0f);
+    else
+        ImGui::TextDisabled("%.0f fps", mine);
+}
+
 // The everyday part: mod switch and presets. Groups with several presets are
 // exclusive (radio buttons plus a "none" choice); single presets are checkboxes.
 void DrawSimple(const AwtStatus& st) {
@@ -188,6 +209,7 @@ void DrawSimple(const AwtStatus& st) {
     ImGui::SameLine();
     ImGui::TextDisabled("(F10 compares with stock)");
 
+    g_api.getBench(&g_bench);
     int pn = g_api.presets(g_presets.data(), (int)g_presets.size());
     if (pn > (int)g_presets.size()) {
         g_presets.resize(pn + 8);
@@ -215,10 +237,28 @@ void DrawSimple(const AwtStatus& st) {
             const bool quality = Lower(group) == "quality";
             if (ImGui::RadioButton(quality ? "Stock (game's own settings)" : "None", !any))
                 for (int i : members) g_api.setPreset(g_presets[i].name, 0);
+            if (quality) DrawFps("Stock");
             for (int i : members) {
                 if (ImGui::RadioButton(g_presets[i].name, g_presets[i].active != 0))
                     g_api.setPreset(g_presets[i].name, 1);
+                if (quality) DrawFps(g_presets[i].name);
                 DrawDescription(g_presets[i].description);
+            }
+            if (quality) {
+                if (g_bench.running) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Measuring %s (%d of %d)... hold still",
+                                       g_bench.current, g_bench.stage + 1, g_bench.stages);
+                } else {
+                    ImGui::BeginDisabled(!g_bench.available);
+                    if (ImGui::Button("Measure FPS of each (about 20 s)")) g_api.startBench();
+                    ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip(g_bench.available
+                                              ? "Runs Stock and each Quality preset for 7 s and shows the average fps.\n"
+                                                "Keep the view still (pause with F8, or freeze the free camera)\n"
+                                                "so the numbers compare like for like."
+                                              : "Needs [Shadows] AtlasScale=2 (frames are counted in its hook).");
+                }
             }
         } else {
             for (int i : members) {

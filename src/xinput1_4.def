@@ -26,3 +26,5 @@ EXPORTS
     AWT_GetPhoto
     AWT_PhotoAction
     AWT_SetTimeScale
+    AWT_StartBenchmark
+    AWT_GetBenchmark

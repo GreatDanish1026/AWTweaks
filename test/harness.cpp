@@ -193,7 +193,7 @@ int wmain(int argc, wchar_t** argv) {
     WriteIni(dir + L"\\awtweaks.ini",
              "\xEF\xBB\xBF[Settings]\nEnforce=true\nClampToRange=false\nPollMs=20\n"
              "Preset=dark test\nToggleKey=F11\nPresetKey=0x7B\nBeep=false\n"
-             "[Debug]\nLogShadowAllocs=true\n[Shadows]\nAtlasScale=2 ; comment\nLightShadowScale=2\n"
+             "[Debug]\nLogShadowAllocs=true\nBenchmarkSettleMs=60\nBenchmarkMeasureMs=250\n[Shadows]\nAtlasScale=2 ; comment\nLightShadowScale=2\n"
              "[FreeCamera]\nEnabled=true\nLookSensitivity=2\nInvertPitch=true\n"
              "[PhotoMode]\nEnabled=true\nPauseKey=Pause\nSlowerKey=NumpadMinus\n"
              "[Tweaks]\nShadows:Ultra Cascade 4 Cull Radius = 0.3 ; comment\n"
@@ -465,6 +465,46 @@ int wmain(int argc, wchar_t** argv) {
         CHECK(F(3)[0] == 0.3f);  // back to the [Tweaks] value saved from the overlay
     }
 
+    // Preset benchmark: Stock + both Quality presets, frames counted in repack().
+    {
+        auto start = (PFN_AWT_StartBenchmark)GetProcAddress(m, "AWT_StartBenchmark");
+        auto get = (PFN_AWT_GetBenchmark)GetProcAddress(m, "AWT_GetBenchmark");
+        auto status = (PFN_AWT_GetStatus)GetProcAddress(m, "AWT_GetStatus");
+        auto setPreset = (PFN_AWT_SetPresetActive)GetProcAddress(m, "AWT_SetPresetActive");
+        CHECK(start && get);
+        setPreset("Dark Test", 1);
+        setPreset("Look1", 1);
+        Sleep(100);
+        AwtBenchmark b{};
+        get(&b);
+        CHECK(b.available && !b.running);
+        CHECK(start() == 1);
+        auto repack = (void(__fastcall*)(void*))((void* volatile const*)g_allocVtable)[3];
+        static uint8_t entries2[0x14] = {};
+        static FakePacker pk{16384, 8192, {}, entries2, 0};
+        static uint8_t alloc2[0x58 + 256 * 8] = {};
+        *(void**)(alloc2 + 0x30) = &pk;
+        bool sawOther = false;
+        ULONGLONG t0 = GetTickCount64();
+        do {  // ~200 "fps": one repack per 5 ms
+            repack(alloc2);
+            Sleep(5);
+            get(&b);
+            if (b.running && !strcmp(b.current, "Other") && F(4)[0] == 70.0f) sawOther = true;
+        } while ((b.running || b.resultCount == 0) && GetTickCount64() - t0 < 5000);
+        CHECK(!b.running && b.resultCount == 3);
+        CHECK(!strcmp(b.results[0].name, "Stock") && !strcmp(b.results[1].name, "Other") &&
+              !strcmp(b.results[2].name, "Dark Test"));
+        CHECK(b.results[0].fps > 50 && b.results[0].fps < 400 && b.results[2].fps > 50);
+        CHECK(sawOther);  // presets really switched during the run
+        Sleep(150);
+        AwtStatus st{};
+        status(&st);
+        CHECK(!strcmp(st.preset, "Dark Test, Look1"));  // restored afterwards
+        setPreset("Look1", 0);
+        Sleep(100);
+    }
+
     // Enforce: game resets a value.
     F(0)[0] = 0.6f;
     Sleep(300);
@@ -543,7 +583,7 @@ int wmain(int argc, wchar_t** argv) {
         CHECK(strstr(log, "3 presets, toggle=F11 preset key=F12") != nullptr);
         CHECK(strstr(log, "HBAO:Radius In Meters: 50 -> 90") != nullptr);
         // Frame 1's fake original copies no placements (-1s => bad); frame 3 overflows.
-        CHECK(strstr(log, "repack frames=3 maxEntries=11 maxLive=11") != nullptr);
+        CHECK(strstr(log, "maxEntries=11 maxLive=11") != nullptr);  // frame count varies with the benchmark test
         CHECK(strstr(log, "overflowFrames=1 halvedEntries=2 badPlacements=2") != nullptr);
         CHECK(strstr(log, "large-slot packer total=2 failed=1") != nullptr);
         CHECK(strstr(log, "Large-slot packer active") != nullptr);
