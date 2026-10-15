@@ -5,6 +5,9 @@ Graphics, lighting and photo-mode mod for **Alan Wake Remastered** (PC).
 - **Sharper, fuller shadows** – sun and moon shadow cascades up to 4096
   (4× the detail of Ultra), every object casting shadows in the distance,
   2× sharper flashlight and lamp shadows.
+- **Soft and contact shadows** (with the ReShade add-on) – sun and moon shadows
+  soften the farther they fall from what casts them, and small contact shadows
+  ground objects where they touch.
 - **Quality presets** – *Ultra+* and *Cinematic* also raise ambient occlusion,
   fog and rain resolution, light shafts, grass draw distance and model detail.
 - **Darker Nights** – optional look where the flashlight really matters.
@@ -67,19 +70,26 @@ Every key can be changed in `awtweaks.ini`.
 | Grass draw distance | 60 m | 90 m | 240 m |
 | Model detail distance | stock | 1.7× | 3.3× |
 | Shadow edge softness (cascade filter size) | 9 | 11 | 13 |
-| **Frame-rate cost vs Stock** | – | **about 5%** | **about 10%** |
+| Soft shadows (sun size)\* | off | 0.5° | 1.0° |
+| Contact shadows\* | off | 0.3 m | 0.6 m |
+| **Frame-rate cost vs Stock** | – | **about 13%** | **about 19%** |
+
+\* Need the ReShade add-on. Adjust them with the *Sun and moon shadows* sliders
+in the overlay.
 
 Costs were measured with the overlay's *Measure FPS of each* button on one
-scene (paused, same view): Stock 151, Ultra+ 144, Cinematic 135 FPS. Your
+scene (4K, paused, same view): Stock 147.5, Ultra+ 128, Cinematic 120 FPS.
+Without the soft and contact shadows the presets cost about 5% and 10%. Your
 numbers will vary with hardware and scene; run the same button to check yours.
 
 *Darker Nights* can be combined with any of them: less automatic brightening at
 night, no invisible light following Alan, dimmer fill lights on characters, and
 a darker sky and fog.
 
-Cinematic is the heaviest. If your frame rate drops, use Ultra+, or set
-`AtlasScale=1` under `[Shadows]` in `awtweaks.ini` (keeps the other
-improvements but caps shadows at the stock 2048).
+Cinematic is the heaviest. If your frame rate drops, use Ultra+, turn the
+soft and contact shadow sliders down (0 = off), or set `AtlasScale=1` under
+`[Shadows]` in `awtweaks.ini` (keeps the other improvements but caps shadows
+at the stock 2048).
 
 ## Settings file
 
@@ -99,7 +109,10 @@ itself is never modified on disk.
 
 - **Nothing changes in game:** check `awtweaks.log` in the game folder. "Mod
   idle" or "signature not found" means this game version isn't supported.
-- **Frame rate too low:** switch to Ultra+ (F9) or set `AtlasScale=1`.
+- **Frame rate too low:** switch to Ultra+ (F9), turn down the soft and contact
+  shadow sliders, or set `AtlasScale=1`.
+- **Shadows look wrong after a game update:** set `ShadowShader=Original` under
+  `[Shaders]` in `awtweaks.ini` to use the game's own shadow shader.
 - **Out of video memory / stutter:** set `AtlasScale=1` under `[Shadows]`.
 - **Controller conflicts:** the mod passes all controller input through to the
   game; it only adds keyboard keys. Change any key in `awtweaks.ini`.

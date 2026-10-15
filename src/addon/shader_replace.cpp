@@ -1,5 +1,6 @@
 // Replaces the game's screen-space sun/moon shadow shaders (ShadowBuffer.rfx,
-// "update_shadow_buffer_PS") with our rebuilt ones from src/shaders/shadow_buffer.hlsl.
+// "update_shadow_buffer_PS") with our own from src/shaders/shadow_buffer.hlsl: rebuilt bit-identical, plus
+// optional soft and contact shadows the main DLL switches on (see the .hlsl).
 // ReShade reports every pipeline the game creates; when its pixel shader is one of the
 // four originals (matched by the DXBC container digest and size) we swap in ours.
 // Mode comes from awtweaks.ini [Shaders] ShadowShader, read at game start.
@@ -26,8 +27,8 @@ struct Variant {
     const char* name;
     uint8_t digest[16];  // DXBC container hash of the game's shader (bytes 4..20)
     size_t size;
-    const uint8_t* rebuilt;
-    size_t rebuiltSize;
+    const uint8_t* enhanced;
+    size_t enhancedSize;
     const uint8_t* debug;
     size_t debugSize;
 };
@@ -80,7 +81,8 @@ Mode ReadMode() {
     ini += L"awtweaks.ini";
     wchar_t v[64] = {};
     GetPrivateProfileStringW(L"Shaders", L"ShadowShader", L"Original", v, 64, ini.c_str());
-    if (_wcsicmp(v, L"Rebuilt") == 0) return Mode::Rebuilt;
+    // "Rebuilt" was the name before the enhanced options existed; same shader.
+    if (_wcsicmp(v, L"Enhanced") == 0 || _wcsicmp(v, L"Rebuilt") == 0) return Mode::Enhanced;
     if (_wcsicmp(v, L"Debug") == 0) return Mode::Debug;
     return Mode::Original;
 }
@@ -96,13 +98,13 @@ bool OnCreatePipeline(device* dev, pipeline_layout, uint32_t count, const pipeli
         int v = Find(desc->code, desc->code_size);
         if (v < 0) continue;
         const Variant& var = kVariants[v];
-        desc->code = g_mode == Mode::Debug ? var.debug : var.rebuilt;
-        desc->code_size = g_mode == Mode::Debug ? var.debugSize : var.rebuiltSize;
+        desc->code = g_mode == Mode::Debug ? var.debug : var.enhanced;
+        desc->code_size = g_mode == Mode::Debug ? var.debugSize : var.enhancedSize;
         changed = true;
         int total = ++g_replaced;
         if (!(g_variantsSeen.fetch_or(1u << v) & (1u << v)))
             Log(reshade::log::level::info, "AWTweaks: replacing shadow shader '%s' (%s), pipeline #%d", var.name,
-                g_mode == Mode::Debug ? "debug stripes" : "rebuilt", total);
+                g_mode == Mode::Debug ? "debug stripes" : "enhanced", total);
     }
     return changed;
 }
@@ -151,7 +153,7 @@ Stats GetStats() {
 
 const char* ModeName() {
     switch (g_mode) {
-        case Mode::Rebuilt: return "Rebuilt";
+        case Mode::Enhanced: return "Enhanced";
         case Mode::Debug: return "Debug";
         default: return "Original";
     }

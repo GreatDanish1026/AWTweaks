@@ -866,6 +866,7 @@ struct Override {
     int count = 0;  // number of parsed floats
     bool isBool = false;
     bool b = false;
+    bool noClamp = false;  // never clamp to the engine range (packed shader settings)
 };
 
 struct Config {
@@ -1118,6 +1119,8 @@ std::unordered_map<std::string, int> g_sourceOf;            // name -> Source fo
 std::unordered_map<std::string, int> g_iniSourceOf;         // same, ignoring overlay edits
 std::unordered_map<std::string, std::string> g_presetOf;    // name -> preset that sets it (winning one)
 std::vector<std::string> g_activePresets;
+float g_sunSize = 0.0f, g_contactShadows = 0.0f;  // effective shadow-shader settings
+int g_shadowFxSource = kSrcNone;
 Config g_baseShared;  // last loaded ini, for preset metadata (names/groups/descriptions)
 bool g_modOff = false;
 volatile LONG g_uiVersion = 0;
@@ -1186,6 +1189,64 @@ float SafeCascadeResolution(const std::string& name, float want) {
     return limit;
 }
 
+// Settings for AWTweaks' shadow shader (the ReShade add-on's [Shaders] ShadowShader=
+// Enhanced). They look like tweakables, so [Tweaks], presets and the overlay all handle
+// them, but they reach the GPU packed into the low digits of "Cascade Filter Size": the
+// engine only uploads constants the game's shader reads, and only that shader reads it.
+const char* const kSunSizeName = "AWTweaks:Sun Size";              // degrees, 0 = stock filter
+const char* const kContactShadowsName = "AWTweaks:Contact Shadows";  // metres, 0 = off
+const char* const kPackedName = "Shadow Filtering d3t:Cascade Filter Size";
+float g_stockCascadeFilterSize = 9.0f;  // the engine's value, noted when it registers
+
+bool IsShadowFxName(const std::string& name) {
+    return Lower(name) == Lower(kSunSizeName) || Lower(name) == Lower(kContactShadowsName);
+}
+
+// Filter size rounded to 0.1, plus 0.00001 * (1 + sun size in 0.1 degree steps * 100
+// + contact length in 2 cm steps); see src/shaders/shadow_buffer.hlsl DecodeSettings.
+float PackShadowFx(float filterSize, float sunDegrees, float contactMetres) {
+    int sun = (int)std::lround(std::clamp(sunDegrees, 0.0f, 4.9f) * 10.0f);
+    int contact = (int)std::lround(std::clamp(contactMetres, 0.0f, 1.98f) / 0.02f);
+    double size = std::floor(std::clamp(filterSize, 1.0f, 16.0f) * 10.0 + 0.5) / 10.0;
+    return (float)(size + (1 + sun * 100 + contact) * 0.00001);
+}
+
+// The shader reads settings from the digits below 0.1, so a size someone sets is kept
+// on the 0.1 grid (9.25 would otherwise read as settings).
+float RoundFilterSize(float v) { return (float)(std::floor(v * 10.0 + 0.5) / 10.0); }
+
+// Moves the two settings out of cfg (the engine has no such tweakables) into the
+// "Cascade Filter Size" override, on top of whatever size is set or stock. Lock held.
+void DeriveShadowFx(Config& cfg) {
+    g_sunSize = g_contactShadows = 0.0f;
+    g_shadowFxSource = kSrcNone;
+    auto sized = cfg.tweaks.find(kPackedName);
+    if (sized != cfg.tweaks.end() && sized->second.count) sized->second.f[0] = RoundFilterSize(sized->second.f[0]);
+    for (auto it = cfg.tweaks.begin(); it != cfg.tweaks.end();) {
+        if (!IsShadowFxName(it->first)) {
+            ++it;
+            continue;
+        }
+        float v = it->second.count ? (std::max)(0.0f, it->second.f[0]) : 0.0f;
+        (Lower(it->first) == Lower(kSunSizeName) ? g_sunSize : g_contactShadows) = v;
+        g_shadowFxSource = (std::max)(g_shadowFxSource, g_sourceOf[it->first]);
+        it = cfg.tweaks.erase(it);
+    }
+    if (g_sunSize <= 0.0f && g_contactShadows <= 0.0f) return;
+    float size = g_stockCascadeFilterSize;
+    auto set = cfg.tweaks.find(kPackedName);
+    if (set != cfg.tweaks.end() && set->second.count) size = set->second.f[0];
+    Override o;
+    o.f[0] = PackShadowFx(size, g_sunSize, g_contactShadows);
+    o.count = 1;
+    o.noClamp = true;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.5f", o.f[0]);
+    o.raw = buf;
+    cfg.tweaks[kPackedName] = o;
+    if (g_sourceOf[kPackedName] < g_shadowFxSource) g_sourceOf[kPackedName] = g_shadowFxSource;
+}
+
 // What actually gets applied: [Tweaks], the active presets on top (file order),
 // then overlay edits; nothing at all while the mod is toggled off. Lock held.
 Config Derive(const Config& base) {
@@ -1208,6 +1269,7 @@ Config Derive(const Config& base) {
         cfg.tweaks[name] = o;
         g_sourceOf[name] = kSrcOverlay;
     }
+    DeriveShadowFx(cfg);
     for (auto& [name, o] : cfg.tweaks)
         if (IsCascadeResolution(name) && o.count) o.f[0] = SafeCascadeResolution(name, o.f[0]);
     if (g_modOff) cfg.enabled = false;
@@ -1280,7 +1342,7 @@ bool Apply(const Known& k, const Override& o, const Config& cfg, bool verbose) {
             float* f = reinterpret_cast<float*>(v);
             float want = o.f[0];
             float lo = f[1], hi = f[2];
-            if (lo <= hi && (want < lo || want > hi)) {
+            if (lo <= hi && (want < lo || want > hi) && !o.noClamp) {
                 if (cfg.clampToRange) want = want < lo ? lo : hi;
                 if (verbose)
                     Log("  note: %s=%g is outside engine range [%g, %g]%s", k.name.c_str(), o.f[0], lo,
@@ -1682,6 +1744,7 @@ DWORD WINAPI Worker(LPVOID) {
             Known k{obj, name, TweakType(obj), {}, false};
             if (k.type == kList) memcpy(k.original, obj + kOffListIndex, 4);
             else memcpy(k.original, obj + kOffValue, sizeof(k.original));
+            if (k.type == kFloat && k.name == kPackedName) memcpy(&g_stockCascadeFilterSize, k.original, 4);
             g_knownIndex[k.name] = known.size();
             known.push_back(std::move(k));
             fresh.push_back(known.size() - 1);
@@ -1883,6 +1946,9 @@ extern "C" int __cdecl AWT_GetStatus(AwtStatus* out) {
     out->overlayEdits = (int)g_ui.size();
     out->registered = (int)g_known.size();
     snprintf(out->preset, sizeof(out->preset), "%s", JoinActivePresetsLocked().c_str());
+    out->sunSize = g_sunSize;
+    out->contactShadows = g_contactShadows;
+    out->shadowFxSource = g_modOff ? AWT_SRC_NONE : g_shadowFxSource;
     ReleaseSRWLockShared(&g_knownLock);
     return 1;
 }
@@ -1944,7 +2010,14 @@ extern "C" int __cdecl AWT_Set(const char* name, const float* v) {
     AcquireSRWLockExclusive(&g_knownLock);
     auto it = g_knownIndex.find(name);
     int ok = 0;
-    if (it != g_knownIndex.end()) {
+    if (IsShadowFxName(name)) {  // not engine tweakables: the worker packs them on re-derive
+        Override o;
+        o.f[0] = (std::max)(0.0f, v[0]);
+        o.count = 1;
+        o.raw = FormatValue(nullptr, kFloat, o.f);
+        g_ui[Lower(name) == Lower(kSunSizeName) ? kSunSizeName : kContactShadowsName] = o;
+        ok = 1;
+    } else if (it != g_knownIndex.end()) {
         Known& k = g_known[it->second];
         Override o;
         o.count = k.type == kColor ? 4 : 1;
@@ -1952,6 +2025,7 @@ extern "C" int __cdecl AWT_Set(const char* name, const float* v) {
         o.isBool = k.type == kBool;
         o.b = v[0] != 0.0f;
         if (k.type == kFloat) o.f[0] = SafeCascadeResolution(k.name, o.f[0]);
+        if (k.type == kFloat && k.name == kPackedName) o.f[0] = RoundFilterSize(o.f[0]);
         o.raw = FormatValue(&k, k.type, o.f);
         if (k.type == kBool || k.type == kFloat || k.type == kColor || k.type == kList) {
             g_ui[k.name] = o;

@@ -437,14 +437,37 @@ void DrawAdvanced(const AwtStatus& st, int n) {
     ImGui::Unindent(8.0f);
 }
 
-// One line on the replaced shadow shaders, when [Shaders] ShadowShader asks for them.
-void DrawShaderStatus() {
+// Sun/moon shadow shader: soft (sun-size) and contact shadows, when [Shaders]
+// ShadowShader=Enhanced has the add-on replacing the game's shader.
+void DrawShadowFx(const AwtStatus& st) {
     shader_replace::Stats s = shader_replace::GetStats();
-    if (s.mode == shader_replace::Mode::Original) return;
-    ImGui::TextWrapped("Shadow shaders: %s - %d of %d replaced (%d pipelines)%s", shader_replace::ModeName(),
-                       s.variantsReplaced, s.variantsTotal, s.pipelinesReplaced,
-                       s.pipelinesMissed ? ", some missed - see ReShade.log" : "");
-    ImGui::Spacing();
+    ImGui::SeparatorText("Sun and moon shadows");
+    if (s.mode == shader_replace::Mode::Original) {
+        ImGui::TextDisabled("Soft and contact shadows: set [Shaders] ShadowShader=Enhanced in "
+                            "awtweaks.ini and restart the game.");
+        return;
+    }
+    if (s.mode == shader_replace::Mode::Debug)
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Debug test pattern on ([Shaders] ShadowShader=Debug)");
+    ImGui::BeginDisabled(st.modOff || s.mode != shader_replace::Mode::Enhanced);
+    float sun = st.sunSize, contact = st.contactShadows;
+    ImGui::SetNextItemWidth(AvailWidth() * 0.6f);
+    if (ImGui::SliderFloat("Sun size", &sun, 0.0f, 3.0f, sun > 0.0f ? "%.1f deg" : "off (game's filter)",
+                           ImGuiSliderFlags_None))
+        g_api.set("AWTweaks:Sun Size", &sun);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Shadows soften the farther they fall from what casts them, like real sunlight.\n"
+                          "The real sun is 0.5 degrees; larger looks softer. Ctrl+click to type a value.");
+    ImGui::SetNextItemWidth(AvailWidth() * 0.6f);
+    if (ImGui::SliderFloat("Contact shadows", &contact, 0.0f, 1.0f, contact > 0.0f ? "%.2f m" : "off",
+                           ImGuiSliderFlags_None))
+        g_api.set("AWTweaks:Contact Shadows", &contact);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Small sharp shadows where objects meet the ground and walls, traced on screen\n"
+                          "up to this distance towards the sun. Fades out beyond 25-50 m.");
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("%d of %d shadow shaders replaced (%d pipelines)%s", s.variantsReplaced, s.variantsTotal,
+                        s.pipelinesReplaced, s.pipelinesMissed ? ", some missed - see ReShade.log" : "");
 }
 
 void DrawOverlay(reshade::api::effect_runtime*) {
@@ -470,7 +493,8 @@ void DrawOverlay(reshade::api::effect_runtime*) {
     ImGui::Spacing();
     DrawPhoto();
     ImGui::Spacing();
-    DrawShaderStatus();
+    DrawShadowFx(st);
+    ImGui::Spacing();
     DrawAdvanced(st, n);
 }
 

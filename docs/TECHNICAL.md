@@ -152,22 +152,58 @@ reach them.
 bindings, `$Globals` layout and signatures, so it fits the game's root
 signature). `build_shaders.ps1` compiles them with the Windows SDK's DXC
 (signed via `dxil.dll`) into the committed `shadow_buffer_blobs.h`, plus
-`DEBUG_STRIPES` variants. The originals were built with a 2019 DXC; two
-`precise` products and one exact constant keep the new compiler's output
-bit-identical.
+debug variants. The originals were built with a 2019 DXC; two `precise`
+products and one exact constant keep the new compiler's output bit-identical.
+
+The shipped build (`ENHANCED`) adds two effects on top, off unless AWTweaks
+sends settings, in which case it runs the original code exactly:
+- **Soft shadows (PCSS).** A 16-tap blocker search over up to 40 atlas texels
+  averages the occluder depth; the penumbra is (receiver − blocker depth) ×
+  tan(half sun angle), converted with the shadow projection's own scales
+  (`|row 0|` UV per metre, `|row 2|` depth per metre), clamped between the
+  stock radius and 40 texels. A 24-tap Vogel PCF with a distance-scaled bias
+  (45° slopes stay clean) filters it.
+- **Contact shadows.** A 12-step screen-space march towards the light,
+  `normalize(cross(row 0, row 1))` signed so shadow depth decreases. A view
+  point maps back to a pixel through the view ray's per-pixel derivatives
+  (`ddx/ddy(TEXCOORD0)`), and scene depth is linear depth × `viewRay.z ×
+  g_fInvNear`. Note the linear depth buffer is not 0..1 (it holds roughly
+  metres). It fades out between 25 and 50 m.
+
+**Settings channel.** The engine uploads only the constants the game's shader
+reads (writing "PCF Samples", read by no shader, never reached the GPU). The
+DLL turns the pseudo-tweakables `AWTweaks:Sun Size` / `AWTweaks:Contact
+Shadows` into the low digits of `Cascade Filter Size`, which only ShadowBuffer
+reads: size rounded to 0.1 + 0.00001 × (1 + sun in 0.1° × 100 + contact in
+2 cm). That moves the stock radius by under 0.4%. Any size someone sets is kept
+on the 0.1 grid so it can't be misread. F10 restores the plain value, so the
+shader runs stock. API v6 reports the effective values for the overlay
+sliders.
+
+`ShadowShader=Debug` shows stripes (32 px, or 128 px while settings arrive). With
+contact shadows on it instead splits the screen in three: contact shadow alone,
+screen-mapping self-check, and why each march ended.
+
+Measured at 4K (paused, same view): Stock 147.5, Ultra+ 128.0 (0.5°, 0.3 m),
+Cinematic 120.1 FPS (1.0°, 0.6 m).
 
 The add-on's `create_pipeline` handler (`src/addon/shader_replace.cpp`) matches
 a pipeline's pixel shader by DXBC digest (bytes 4–20) and size and swaps in the
 rebuild; `init_pipeline` logs any game shader that slipped through.
-`ShadowShader=Original | Rebuilt | Debug`, read at game start. In game (Ultra)
-only the 12-tap fade-in variant is created.
+`ShadowShader=Enhanced | Original | Debug` (`Rebuilt` is an alias for
+Enhanced), read at game start. In game (Ultra) only the 12-tap fade-in
+variant is created.
 
 `test\shader_compare.cpp` renders an original blob and a rebuild on D3D12 WARP
 with the same synthetic depth, shadow map and constants and compares every
-pixel; all four match bit for bit:
+pixel. With settings off all four match bit for bit. Given a settings code
+(`1 + sun × 100 + contact`) as a fifth argument, it instead checks the
+enhanced output for NaNs and out-of-range values and writes both shadow masks
+as PGM:
 ```
 dxc -T vs_6_0 -E main test\fullscreen_vs.hlsl -Fo bin\shaders\test_vs.dxil
 shader_compare.exe bin\shaders\test_vs.dxil <original_ps.dxil> bin\shaders\Sb12Start.dxil 10
+shader_compare.exe bin\shaders\test_vs.dxil <original_ps.dxil> bin\shaders\Sb12Start.dxil 3 1031
 ```
 The original blobs come from the game's `ShadowBuffer.shaderbin` and aren't in
 the repository.
@@ -189,4 +225,4 @@ winget install MartinStorsjo.LLVM-MinGW.UCRT
 ## Test
 `test\harness.cpp` fakes the registry (same signature and layout) and checks
 float/bool/color writes, late registration, enforce, hot reload, clamping,
-restore-on-removal, XInput forwarding and the dump.
+restore-on-removal, XInput forwarding, the dump and the shadow-settings packing.

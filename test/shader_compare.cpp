@@ -3,8 +3,12 @@
 // D3D12 WARP (software, deterministic) with identical synthetic inputs - linear depth,
 // a shadow map, the $Globals constants - and compares every output pixel.
 //
-// Usage: shader_compare.exe <vs.dxil> <original_ps.dxil> <replacement_ps.dxil> [seeds]
+// Usage: shader_compare.exe <vs.dxil> <original_ps.dxil> <replacement_ps.dxil> [seeds] [settings]
 // Exit code 0 = all seeds within tolerance.
+// With [settings] (the AWTweaks settings code the enhanced shader decodes from
+// g_fCascadePCFSize_d3t: 1 + sun * 100 + contact) the outputs are expected to differ: it checks the replacement for
+// NaNs and out-of-range values instead, and writes both shadow masks of seed 1 as
+// shadow_a.pgm / shadow_b.pgm.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d12.h>
@@ -197,7 +201,7 @@ static std::vector<uint8_t> MakeConstants(std::mt19937& rng) {
     f(472, (float)kShadowRes);          // g_vShadowMapRes
     f(476, (float)kShadowRes);
     f(488, 0.0005f + 0.002f * u(rng));  // g_fPCFBias_d3t
-    f(496, 5.0f + 8.0f * u(rng));       // g_fCascadePCFSize_d3t
+    f(496, std::round((5.0f + 8.0f * u(rng)) * 10.0f) / 10.0f);  // g_fCascadePCFSize_d3t: AWTweaks keeps it on a 0.1 grid
     f(512, 10.0f + 30.0f * u(rng));     // g_fRegionStart
     f(516, 60.0f + 150.0f * u(rng));    // g_fRegionEnd
     f(588, 0.0004f + 0.0008f * u(rng)); // g_fPCFSize
@@ -217,6 +221,8 @@ int main(int argc, char** argv) {
     }
     auto vs = ReadFile(argv[1]), psA = ReadFile(argv[2]), psB = ReadFile(argv[3]);
     const int seeds = argc > 4 ? atoi(argv[4]) : 8;
+    const bool enhanced = argc > 5;
+    const float settings = enhanced ? (float)atof(argv[5]) : 0.0f;
 
     Gpu g;
     g.Init();
@@ -308,6 +314,12 @@ int main(int argc, char** argv) {
                                   D3D12_RESOURCE_STATE_COPY_DEST};
         }
         auto cb = MakeConstants(rng);
+        if (enhanced) {  // g_fCascadePCFSize_d3t rounded to 0.1, plus code * 0.00001
+            float size;
+            memcpy(&size, &cb[496], 4);
+            size = (float)(std::floor(size * 10.0 + 0.5) / 10.0 + settings * 0.00001);
+            memcpy(&cb[496], &size, 4);
+        }
         uint8_t* p = nullptr;
         CHECKHR(cbuf->Map(0, nullptr, (void**)&p));
         memcpy(p, cb.data(), cb.size());
@@ -332,6 +344,32 @@ int main(int argc, char** argv) {
             exact += same;
         }
         const size_t n = a.size() / 4;
+        if (enhanced) {
+            size_t bad = 0;
+            double meanB = 0;
+            for (size_t i = 0; i < b.size(); i += 4) {
+                float x = b[i];
+                bad += !(x >= 0.0f && x <= 1.0f);  // also catches NaN
+                meanB += x;
+            }
+            failures += bad != 0;
+            printf("seed %d: %s  shadow mean original %.3f, enhanced %.3f, changed %zu px, invalid %zu px\n",
+                   seed, bad ? "BAD " : "OK  ", mean[0] / n, meanB / n, diffPixels, bad);
+            if (seed == 1) {
+                for (int k = 0; k < 2; ++k) {
+                    const std::vector<float>& img = k ? b : a;
+                    FILE* f = fopen(k ? "shadow_b.pgm" : "shadow_a.pgm", "wb");
+                    fprintf(f, "P5 %u %u 255\n", kW, kH);
+                    for (size_t i = 0; i < img.size(); i += 4)
+                        fputc((int)(std::min(std::max(img[i], 0.0f), 1.0f) * 255.0f + 0.5f), f);
+                    fclose(f);
+                }
+            }
+            g.Begin();
+            g.list->ResourceBarrier(2, back);
+            g.SubmitAndWait();
+            continue;
+        }
         bool ok = diffPixels == 0;
         failures += !ok;
         printf("seed %d: %s  bit-exact %.2f%%  >1e-4: %zu px  max diff x=%.2g y=%.2g z=%.2g w=%.2g"
@@ -343,6 +381,9 @@ int main(int argc, char** argv) {
         g.list->ResourceBarrier(2, back);
         g.SubmitAndWait();
     }
-    printf(failures ? "FAILED (%d seed(s))\n" : "ALL SEEDS MATCH\n", failures);
+    if (enhanced)
+        printf(failures ? "FAILED (%d seed(s))\n" : "ALL SEEDS VALID\n", failures);
+    else
+        printf(failures ? "FAILED (%d seed(s))\n" : "ALL SEEDS MATCH\n", failures);
     return failures ? 1 : 0;
 }

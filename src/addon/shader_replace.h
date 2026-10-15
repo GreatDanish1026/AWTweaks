@@ -3,7 +3,7 @@
 
 namespace shader_replace {
 
-enum class Mode { Original, Rebuilt, Debug };
+enum class Mode { Original, Enhanced, Debug };
 
 struct Stats {
     Mode mode;

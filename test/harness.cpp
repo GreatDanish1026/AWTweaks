@@ -612,6 +612,59 @@ int wmain(int argc, wchar_t** argv) {
         CHECK(*(int*)(lst + 0xD0) == 4);
     }
 
+    // v6: shadow shader settings are packed into the low digits of "Cascade Filter Size"
+    // (on top of its stock or set value), follow the overlay and the A/B toggle.
+    {
+        uint8_t* pcf = Make(7, "Shadow Filtering d3t:Cascade Filter Size", 1);
+        F(7)[0] = 9.0f; F(7)[1] = 1.0f; F(7)[2] = 16.0f;
+        auto close = [](float a, double b) { return (a - b) < 1e-6 && (b - a) < 1e-6; };
+        g_reg[7] = pcf;
+        g_cnt = 8;
+        auto status = (PFN_AWT_GetStatus)GetProcAddress(m, "AWT_GetStatus");
+        auto set = (PFN_AWT_Set)GetProcAddress(m, "AWT_Set");
+        auto reset = (PFN_AWT_Reset)GetProcAddress(m, "AWT_Reset");
+        auto setModOn = (PFN_AWT_SetModOn)GetProcAddress(m, "AWT_SetModOn");
+        WriteIni(dir + L"\\awtweaks.ini",
+                 "[Settings]\nClampToRange=true\nPollMs=20\n[Tweaks]\nHBAO:Bias=5\n"
+                 "AWTweaks:Sun Size=1\nAWTweaks:Contact Shadows=0.3\n");
+        Sleep(300);
+        CHECK(close(F(7)[0], 9.01016));  // code 1 + 10 * 100 + 15
+        AwtStatus st{};
+        status(&st);
+        CHECK(st.sunSize == 1.0f && st.contactShadows > 0.299f && st.contactShadows < 0.301f && st.shadowFxSource == AWT_SRC_TWEAKS);
+        float half = 0.5f;
+        CHECK(set("AWTweaks:Sun Size", &half) == 1);
+        Sleep(200);
+        CHECK(close(F(7)[0], 9.00516));
+        status(&st);
+        CHECK(st.sunSize == 0.5f && st.shadowFxSource == AWT_SRC_OVERLAY && st.overlayEdits == 1);
+        setModOn(0);
+        Sleep(200);
+        CHECK(F(7)[0] == 9.0f);  // F10: the game's value, so the shader runs stock
+        setModOn(1);
+        Sleep(200);
+        CHECK(close(F(7)[0], 9.00516));
+        CHECK(reset(nullptr) == 1);
+        Sleep(200);
+        CHECK(close(F(7)[0], 9.01016));
+        // On top of a size the ini sets.
+        WriteIni(dir + L"\\awtweaks.ini",
+                 "[Settings]\nPollMs=20\n[Tweaks]\nShadow Filtering d3t:Cascade Filter Size=13\n"
+                 "AWTweaks:Sun Size=2.5\n");
+        Sleep(300);
+        CHECK(close(F(7)[0], 13.02501));
+        float zero = 0.0f;  // both off -> no override at all
+        set("AWTweaks:Sun Size", &zero);
+        set("AWTweaks:Contact Shadows", &zero);
+        Sleep(200);
+        CHECK(F(7)[0] == 13.0f);
+        reset(nullptr);
+        WriteIni(dir + L"\\awtweaks.ini",
+                 "[Settings]\nClampToRange=true\nPollMs=20\n[Tweaks]\nHBAO:Bias=5\n"
+                 "Shadows:Ultra Cascade 4 Cull Radius=0.45\n");
+        Sleep(300);
+    }
+
     Sleep(3500);  // let the dump fire
     FILE* f = _wfopen((dir + L"\\awtweaks_dump.txt").c_str(), L"rb");
     CHECK(f != nullptr);
