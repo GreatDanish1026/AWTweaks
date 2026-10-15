@@ -1,0 +1,25 @@
+LIBRARY xinput1_4.dll
+EXPORTS
+    XInputGetState              @2
+    XInputSetState              @3
+    XInputGetCapabilities       @4
+    XInputEnable                @5
+    XInputGetBatteryInformation @7
+    XInputGetKeystroke          @8
+    XInputGetAudioDeviceIds     @10
+    XInputOrd100                @100 NONAME
+    XInputOrd101                @101 NONAME
+    XInputOrd102                @102 NONAME
+    XInputOrd103                @103 NONAME
+    XInputOrd104                @104 NONAME
+    XInputOrd108                @108 NONAME
+    XInputOrd109                @109 NONAME
+    AWT_GetStatus
+    AWT_Snapshot
+    AWT_Set
+    AWT_Reset
+    AWT_SaveToIni
+    AWT_GetPresets
+    AWT_SetPresetActive
+    AWT_SetModOn
+    AWT_SaveStartupPresets

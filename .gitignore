@@ -1,0 +1,14 @@
+# Build output (rebuild with build.ps1)
+bin/
+*.exe
+*.dll
+*.addon64
+*.tmp
+
+# Personal files (original keybinds.xml backup)
+backup/
+
+# Runtime files the mod writes next to the game
+awtweaks.log
+awtweaks.prev.log
+awtweaks_dump.txt
