@@ -66,7 +66,7 @@ Every key can be changed in `awtweaks.ini`.
 | Fog and rain | half resolution | full | full |
 | Grass draw distance | 60 m | 90 m | 240 m |
 | Model detail distance | stock | 1.7× | 3.3× |
-| Shadow edge smoothing (samples) | 10 | 16 | 32 |
+| Shadow edge softness (cascade filter size) | 9 | 11 | 13 |
 | **Frame-rate cost vs Stock** | – | **about 5%** | **about 10%** |
 
 Costs were measured with the overlay's *Measure FPS of each* button on one

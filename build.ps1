@@ -40,7 +40,8 @@ Write-Host "Built $root\bin\xinput1_4.dll"
 & $cxx --target=x86_64-w64-mingw32 -std=c++17 -O2 -shared -static -s `
     -Wall -Wno-unused-function -Wno-missing-braces -Wno-unknown-attributes `
     -I "$root\third_party\imgui" -I "$root\third_party\reshade\include" `
-    -o "$root\bin\AWTweaks.addon64" "$root\src\addon\awtweaks_overlay.cpp" "$root\bin\obj\version_addon.o"
+    -o "$root\bin\AWTweaks.addon64" "$root\src\addon\awtweaks_overlay.cpp" "$root\src\addon\shader_replace.cpp" `
+    "$root\bin\obj\version_addon.o"
 if ($LASTEXITCODE) { throw "add-on build failed" }
 Write-Host "Built $root\bin\AWTweaks.addon64"
 

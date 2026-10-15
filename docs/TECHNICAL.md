@@ -138,6 +138,40 @@ The time-scale step and the paused flag are found by signature
 (`TIMESCALE_DOWN` handler, `JUMP_ONE_FRAME` site). The overlay's Photo mode
 section has the same controls plus a speed slider.
 
+### Shadow shader replacement (`[Shaders]`, needs the add-on)
+Every material samples `g_sShadowBuffer`, a screen-space sun/moon shadow mask
+written only by `ShadowBuffer.shaderbin` (`update_shadow_buffer_PS`). Its four
+pixel-shader variants are a 12- or 10-tap Vogel-disk PCF, rotated per pixel by
+interleaved gradient noise, fading in at the cascade's start or out towards its
+end; output is (shadow, view depth packed into two channels, cascade blend).
+They read only `Cascade Filter Size`, the bias and a per-cascade CPU-side
+`g_fPCFSize` — the `PCF Samples`, `Filter Size` and `Function` tweakables never
+reach them.
+
+`src/shaders/shadow_buffer.hlsl` rebuilds all four from the game's DXIL (same
+bindings, `$Globals` layout and signatures, so it fits the game's root
+signature). `build_shaders.ps1` compiles them with the Windows SDK's DXC
+(signed via `dxil.dll`) into the committed `shadow_buffer_blobs.h`, plus
+`DEBUG_STRIPES` variants. The originals were built with a 2019 DXC; two
+`precise` products and one exact constant keep the new compiler's output
+bit-identical.
+
+The add-on's `create_pipeline` handler (`src/addon/shader_replace.cpp`) matches
+a pipeline's pixel shader by DXBC digest (bytes 4–20) and size and swaps in the
+rebuild; `init_pipeline` logs any game shader that slipped through.
+`ShadowShader=Original | Rebuilt | Debug`, read at game start. In game (Ultra)
+only the 12-tap fade-in variant is created.
+
+`test\shader_compare.cpp` renders an original blob and a rebuild on D3D12 WARP
+with the same synthetic depth, shadow map and constants and compares every
+pixel; all four match bit for bit:
+```
+dxc -T vs_6_0 -E main test\fullscreen_vs.hlsl -Fo bin\shaders\test_vs.dxil
+shader_compare.exe bin\shaders\test_vs.dxil <original_ps.dxil> bin\shaders\Sb12Start.dxil 10
+```
+The original blobs come from the game's `ShadowBuffer.shaderbin` and aren't in
+the repository.
+
 ### Hotkeys and presets
 `ToggleKey` (F10) A/B-toggles every override and `LightShadowScale` back to
 stock; `PresetKey` (F9) cycles `[Preset:Name]` sections, which apply on top of

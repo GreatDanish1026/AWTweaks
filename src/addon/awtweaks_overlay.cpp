@@ -19,6 +19,7 @@
 
 #include "../awtweaks_api.h"
 #include "../version.h"
+#include "shader_replace.h"
 
 extern "C" __declspec(dllexport) const char* NAME = "AWTweaks";
 extern "C" __declspec(dllexport) const char* DESCRIPTION =
@@ -436,6 +437,16 @@ void DrawAdvanced(const AwtStatus& st, int n) {
     ImGui::Unindent(8.0f);
 }
 
+// One line on the replaced shadow shaders, when [Shaders] ShadowShader asks for them.
+void DrawShaderStatus() {
+    shader_replace::Stats s = shader_replace::GetStats();
+    if (s.mode == shader_replace::Mode::Original) return;
+    ImGui::TextWrapped("Shadow shaders: %s - %d of %d replaced (%d pipelines)%s", shader_replace::ModeName(),
+                       s.variantsReplaced, s.variantsTotal, s.pipelinesReplaced,
+                       s.pipelinesMissed ? ", some missed - see ReShade.log" : "");
+    ImGui::Spacing();
+}
+
 void DrawOverlay(reshade::api::effect_runtime*) {
     if (!ResolveApi()) {
         ImGui::TextWrapped("AWTweaks' xinput1_4.dll isn't loaded, so there is nothing to edit. "
@@ -459,6 +470,7 @@ void DrawOverlay(reshade::api::effect_runtime*) {
     ImGui::Spacing();
     DrawPhoto();
     ImGui::Spacing();
+    DrawShaderStatus();
     DrawAdvanced(st, n);
 }
 
@@ -469,8 +481,10 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
         case DLL_PROCESS_ATTACH:
             if (!reshade::register_addon(module)) return FALSE;
             reshade::register_overlay("AWTweaks", &DrawOverlay);
+            shader_replace::Install();
             break;
         case DLL_PROCESS_DETACH:
+            shader_replace::Uninstall();
             reshade::unregister_overlay("AWTweaks", &DrawOverlay);
             reshade::unregister_addon(module);
             break;
