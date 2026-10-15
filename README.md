@@ -1,4 +1,4 @@
-# AWTweaks 1.0.0
+# AWTweaks 1.1.0
 
 Graphics, lighting and photo-mode mod for **Alan Wake Remastered** (PC).
 
