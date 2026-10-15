@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "awtweaks_api.h"
+#include "version.h"
 
 namespace {
 
@@ -2034,7 +2035,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
         MoveFileExW((g_dir + L"awtweaks.log").c_str(), (g_dir + L"awtweaks.prev.log").c_str(),
                     MOVEFILE_REPLACE_EXISTING);
         g_log = _wfopen((g_dir + L"awtweaks.log").c_str(), L"w");
-        Log("AWTweaks loaded");
+        Log("AWTweaks " AWT_VERSION_STRING " loaded (made for Alan Wake Remastered build " AWT_TESTED_GAME_BUILD ")");
         // 2 = 16384x8192, D3D12's max texture size; anything larger can't be created.
         UINT scale = GetPrivateProfileIntW(L"Shadows", L"AtlasScale", 1, (g_dir + L"awtweaks.ini").c_str());
         if (scale > 2) {

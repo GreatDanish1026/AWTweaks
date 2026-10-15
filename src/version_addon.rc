@@ -1,0 +1,3 @@
+#define AWT_FILE_DESCRIPTION "AWTweaks ReShade add-on (in-game controls)"
+#define AWT_ORIGINAL_FILENAME "AWTweaks.addon64"
+#include "version.rc"

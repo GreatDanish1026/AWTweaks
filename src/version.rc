@@ -1,0 +1,33 @@
+// Version resource shared by xinput1_4.dll and AWTweaks.addon64.
+// AWT_FILE_DESCRIPTION / AWT_ORIGINAL_FILENAME are passed with -D by build.ps1.
+#include <winver.h>
+#include "version.h"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     AWT_VERSION_MAJOR, AWT_VERSION_MINOR, AWT_VERSION_PATCH, 0
+PRODUCTVERSION  AWT_VERSION_MAJOR, AWT_VERSION_MINOR, AWT_VERSION_PATCH, 0
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0x0L
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_DLL
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",      "AWTweaks"
+            VALUE "FileDescription",  AWT_FILE_DESCRIPTION
+            VALUE "FileVersion",      AWT_VERSION_STRING
+            VALUE "InternalName",     "AWTweaks"
+            VALUE "LegalCopyright",   "Copyright (c) 2026 Scott Dinwiddie. MIT License."
+            VALUE "OriginalFilename", AWT_ORIGINAL_FILENAME
+            VALUE "ProductName",      "AWTweaks for Alan Wake Remastered"
+            VALUE "ProductVersion",   AWT_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

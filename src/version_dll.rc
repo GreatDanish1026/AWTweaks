@@ -1,0 +1,3 @@
+#define AWT_FILE_DESCRIPTION "AWTweaks for Alan Wake Remastered (XInput proxy)"
+#define AWT_ORIGINAL_FILENAME "xinput1_4.dll"
+#include "version.rc"

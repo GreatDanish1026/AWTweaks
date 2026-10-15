@@ -20,9 +20,18 @@ $required = @('(?m)^\[Settings\]', '(?m)^Preset=', '(?m)^\[Shadows\]', '(?m)^Atl
               '(?m)^\[FreeCamera\]', '(?m)^\[PhotoMode\]', '(?m)^\[Debug\]', '(?m)^\[Tweaks\]', '(?m)^\[Preset:')
 $missing = $required | Where-Object { $ini -notmatch $_ }
 if ($missing) { throw "awtweaks.ini is missing: $($missing -join ', ')" }
+
+# Version resources (src/version.h is the single source of the version number).
+$windres = Join-Path (Split-Path $cxx) "llvm-windres.exe"
+New-Item -ItemType Directory -Force "$root\bin\obj" | Out-Null
+foreach ($rc in 'version_dll', 'version_addon') {
+    & $windres --target=pe-x86-64 -I "$root\src" -i "$root\src\$rc.rc" -O coff -o "$root\bin\obj\$rc.o"
+    if ($LASTEXITCODE) { throw "resource compile failed: $rc" }
+}
+
 & $cxx --target=x86_64-w64-mingw32 -std=c++17 -O2 -shared -static -s `
     -Wall -Wno-unused-function `
-    -o "$root\bin\xinput1_4.dll" "$root\src\awtweaks.cpp" "$root\src\xinput1_4.def"
+    -o "$root\bin\xinput1_4.dll" "$root\src\awtweaks.cpp" "$root\src\xinput1_4.def" "$root\bin\obj\version_dll.o"
 if ($LASTEXITCODE) { throw "build failed" }
 Copy-Item "$root\awtweaks.ini" "$root\bin\awtweaks.ini" -Force
 Write-Host "Built $root\bin\xinput1_4.dll"
@@ -31,7 +40,7 @@ Write-Host "Built $root\bin\xinput1_4.dll"
 & $cxx --target=x86_64-w64-mingw32 -std=c++17 -O2 -shared -static -s `
     -Wall -Wno-unused-function -Wno-missing-braces -Wno-unknown-attributes `
     -I "$root\third_party\imgui" -I "$root\third_party\reshade\include" `
-    -o "$root\bin\AWTweaks.addon64" "$root\src\addon\awtweaks_overlay.cpp"
+    -o "$root\bin\AWTweaks.addon64" "$root\src\addon\awtweaks_overlay.cpp" "$root\bin\obj\version_addon.o"
 if ($LASTEXITCODE) { throw "add-on build failed" }
 Write-Host "Built $root\bin\AWTweaks.addon64"
 

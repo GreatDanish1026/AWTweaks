@@ -1,158 +1,116 @@
-# AWTweaks — Alan Wake Remastered engine tweakables
+# AWTweaks 1.0.0
 
-Overrides Remedy's internal tuning variables ("tweakables") — shadow cascades,
-shadow-map sizes, HBAO, volumetric light, fog and ~1,000 more — from an INI file,
-with live reload while the game runs.
+Graphics, lighting and photo-mode mod for **Alan Wake Remastered** (PC).
+
+- **Sharper, fuller shadows** – sun and moon shadow cascades up to 4096
+  (4× the detail of Ultra), every object casting shadows in the distance,
+  2× sharper flashlight and lamp shadows.
+- **Quality presets** – *Ultra+* and *Cinematic* also raise ambient occlusion,
+  fog and rain resolution, light shafts, grass draw distance and model detail.
+- **Darker Nights** – optional look where the flashlight really matters.
+- **Free camera and photo mode** – the developers' free camera, pause,
+  frame-by-frame stepping, slow motion and time of day.
+- **In-game controls** (with ReShade) – presets, photo mode and live sliders
+  for over 1,000 engine settings.
+
+## Requirements
+
+- Alan Wake Remastered for PC, **Epic Games Store version** (game build 34885).
+  Other versions (e.g. Steam) are untested: if the mod doesn't recognise the
+  game it does nothing and says so in `awtweaks.log`.
+- Windows 10 or 11, 64-bit.
+- About 1 GB of extra video memory for the larger shadow maps (can be turned off).
+- Optional: [ReShade](https://reshade.me) 6.8 or newer, **"with full add-on
+  support"** version, for the in-game control panel.
 
 ## Install
-Copy `bin\xinput1_4.dll` and `awtweaks.ini` next to `Game_f_x64_EOS.exe`.
-Uninstall by deleting `xinput1_4.dll`.
 
-The game imports `XINPUT1_4.dll`, so the proxy loads automatically; all XInput
-calls are forwarded to `System32\xinput1_4.dll`. `dxgi.dll` is left free for ReShade.
+1. Open the game folder – the one containing `Game_f_x64_EOS.exe`.
+2. Copy **`xinput1_4.dll`** and **`awtweaks.ini`** into it.
+3. *Optional, for the in-game panel:* install ReShade with full add-on support
+   for `Game_f_x64_EOS.exe` (choose DirectX 10/11/12; effect packs are optional),
+   then also copy **`AWTweaks.addon64`** into the game folder.
 
-## Files written next to the game
-| File | What |
+Start the game. It begins on the **Cinematic** preset.
+
+## Controls
+
+| Key | Action |
 |---|---|
-| `awtweaks.log` | What was found and applied, each run |
-| `awtweaks_dump.txt` | Every registered tweakable with its **original** value and range (`now X` marks overridden ones). Copy lines from here into the INI. |
+| **F10** | Mod on/off – compare with the stock game (high beep = on) |
+| **F9** | Cycle quality: Stock → Ultra+ → Cinematic |
+| **F7** | Free camera: fly → frozen (Alan playable) → off |
+| **F8** | Pause / resume |
+| **F6** | Advance one frame (while paused) |
+| **Minus / Plus** | Slower / faster game speed (0.01× – 4×) |
+| **Backspace** | Normal speed |
+| **PageDown / PageUp** | Time of day −/+ 1 minute (hold Shift for 1 hour) |
 
-Tweakables register lazily (when their code first runs), so the dump grows as
-you load levels. Some values (e.g. shadow map sizes) are only read on allocation:
-switch the in-game quality preset or restart to see them take effect.
+While flying the free camera: move with your movement keys or left stick, look
+with the mouse or right stick, **Space** up, **Left Ctrl** down, **Left Shift**
+faster, **Left Alt** slower. Alan stays where he is.
 
-## How it works
-Remedy's tweakable constructor appends each object to a global array
-(`Tweakable* [0x500]` + count). The DLL finds that array via a byte signature
-in the constructor, then polls it from a background thread:
+With ReShade, press **Home** and open the **AWTweaks** tab for the same controls
+plus preset descriptions, an FPS comparison of the presets, and an *Advanced*
+section with every engine setting.
 
-| Offset | Field |
-|---|---|
-| `+0x00` | `const char*` name |
-| `+0xA8` | type: 0 bool, 1 float, 3 color (float4); others unsupported |
-| `+0xB0` | value (float: value, min `+0xB4`, max `+0xB8`) |
+Every key can be changed in `awtweaks.ini`.
 
-### Shadow maps
-All sun cascades and spot/point-light shadows share one atlas, packed in
-power-of-two slots by `rend::ShadowMapAllocator`. Stock: 8192x4096. On Ultra the
-sun uses 6 cascades per frame, each fitted to ≤ `Shadows:Ultra High Resolution`
-(2048), plus 512²/1024² light maps — the atlas is full.
-
-`[Shadows] AtlasScale=2` patches the allocator ctor's size immediates before
-the renderer starts (16384x8192, D3D12's max; colour + depth targets are created
-from the same fields). With `Shadows:Ultra High Resolution=4096` the cascades
-request up to ~4050² (4x the texels).
-
-The engine's packer walks the atlas in fixed 2048x2048 cells and never places a
-region whose power-of-two side is larger — it (and everything queued behind it)
-is left at (0,0), so cascades overlapped and flickered. With `AtlasScale=2` the
-DLL replaces `repack()` (allocator vtable slot 3) on frames that need a >2048
-slot: same overflow rule (halve resizable light regions), then a quadtree of
-power-of-two squares, largest first. Measured in game at 4096: every frame
-packed, 0 failures, atlas ≤ 77% full, no FPS change.
-
-`[Shadows] LightShadowScale=2` multiplies spot/point-light shadow requests
-(per-light authored size, doubled on Very High/Ultra: 512/1024 → 1024/2048, cap
-4096) in the `allocate()` hook. Lights are the only `flag=1` (resizable) requests,
-which the engine already halves on overflow, so the renderer takes their size
-from the packed region. Measured in game: atlas ≤ 80% full, no overflow.
-
-`[Debug] LogShadowAllocs=true` logs every request by size and caller, plus
-per-interval repack stats (fill, overflow, halvings, bad placements).
-
-### Free camera (`[FreeCamera]`, F7)
-The developer free camera ships intact (camera manager modes: 0 player, 1/2/6
-FreeCamera; the per-frame toggle cycles 0 → 1 fly → 2 frozen/Alan playable → 0),
-but nothing on PC fires its `TOGGLE_FREECAMERA` (127) control — binding it in
-`keybinds.xml` is accepted yet never triggers — and its analog controls 9..16
-(`FREECAMERA_X/Z/HEADING/PITCH/UP/DOWN/FASTER/SLOWER`) have no PC binding.
-Two inline detours (installed from DllMain, 14-byte abs jump + trampoline that
-re-encodes the RIP-relative prologue):
-
-- `isPressed(int)`: the hotkey makes the next query for 127 return true once,
-  so the game switches cameras itself on its own thread.
-- `getAxis(int)`: in mode 1/6, feeds 9/10 from `MOVEMENT_X/Y` (0/1), 11/12 from
-  `CAMERA_X/Y` (5/6, mouse/right stick), 13..16 from Space/LCtrl/LShift/LAlt,
-  and returns 0 for the player's controls 0..8 so Alan stays put.
-
-`LookSensitivity` / `InvertPitch` apply live; `[Debug] LogFreeCamInput` logs
-per-control call counts and peaks every 2 s.
-
-### In-game sliders (ReShade add-on)
-`bin\AWTweaks.addon64` is a ReShade add-on (needs ReShade 6.8+ *with full add-on
-support*). Copy it next to the game; open ReShade (Home) → **AWTweaks** tab:
-
-- **Top (everyday):** Mod enabled switch, **Quality** presets as radio buttons
-  (Stock / Ultra+ / Cinematic), **Look** presets as checkboxes (Darker Nights),
-  each with its description, and *Use these presets at startup* (rewrites
-  `Preset=`).
-- **Advanced (collapsed):** every registered tweakable grouped by category, with
-  sliders / checkboxes / colour pickers, a filter, "Only changed", per-item undo,
-  and **Save to awtweaks.ini** (written in place into `[Tweaks]`, or into the
-  preset section that set the value). Hover a row for its stock value.
-
-Presets: `[Preset:Name]` sections with optional `Group=` (one active preset per
-group) and `Description=`. `Preset=` takes a comma list; F9 cycles the Quality
-group.
+## Presets
 
 | | Stock | Ultra+ | Cinematic |
 |---|---|---|---|
-| Sun cascade resolution | 2048 | 3072 | 4096 |
-| Every object casts sun shadows | – | – | yes |
-| HBAO small-scale / exponent | 1.1 / 2.1 | 1.4 / 2.4 | 1.4 / 2.4 |
-| Fog and rain resolution | half | full | full |
-| Light-shaft blur / intensity | 1 / 0.55 | 2 / 0.55 | 2 / 0.7 |
-| Small foliage draw distance | 60 m | 90 m | 240 m (cutscene value) |
-| `LOD:LOD detail` (switch distance × size) | 0.3 | 0.5 | 1.0 |
-| High-quality skinning range | 16 m | 20 m | 20 m |
+| Sun/moon shadow detail | 2048 | 3072 | 4096 |
+| Distant objects cast shadows | some | some | all |
+| Ambient occlusion | stock | stronger | stronger |
+| Fog and rain | half resolution | full | full |
+| Grass draw distance | 60 m | 90 m | 240 m |
+| Model detail distance | stock | 1.7× | 3.3× |
 
-**Measure FPS of each** (overlay, Quality group) runs Stock and every Quality
-preset for 2 s settle + 5 s measure, counting rendered frames in the repack
-hook, then restores the user's presets. It only shows a cost when the frame
-rate isn't capped (V-Sync / Reflex / driver limiter).
+*Darker Nights* can be combined with any of them: less automatic brightening at
+night, no invisible light following Alan, dimmer fill lights on characters, and
+a darker sky and fog.
 
-The ImGui calls go through ReShade's function table, which is MSVC-built:
-`GetContentRegionAvail` returns `ImVec2` via a hidden pointer there, so the
-add-on (GNU ABI) calls that entry with the MSVC convention (`AvailWidth()`).
+Cinematic is the heaviest. If your frame rate drops, use Ultra+, or set
+`AtlasScale=1` under `[Shadows]` in `awtweaks.ini` (keeps the other
+improvements but caps shadows at the stock 2048).
 
-Overlay edits are overrides held by the main DLL: they beat `[Tweaks]` and
-presets until saved or undone, and F10 still flips everything to stock. The
-add-on talks to `xinput1_4.dll` through the C API in `src/awtweaks_api.h`
-(`AWT_GetStatus/Snapshot/Set/Reset/SaveToIni`). Headers for ReShade 6.8.0 and
-Dear ImGui 1.92.5 (the version that ReShade's overlay table requires) are in
-`third_party/` with their licences.
+## Settings file
 
-### Photo mode (`[PhotoMode]`)
-The game still polls its developer controls every frame; the `isPressed`
-detour now queues "presses" per control id, each query consuming one:
+`awtweaks.ini` is re-read while the game runs – save it and changes apply
+almost immediately (except settings marked "read at game start"). It explains
+each option in its comments. Your own changes go under `[Tweaks]`;
+`awtweaks_dump.txt`, written next to it, lists every engine setting with its
+stock value.
 
-| Key (default) | Control | Effect |
-|---|---|---|
-| F7 | `TOGGLE_FREECAMERA` 0x7F | player → fly → frozen (Alan playable) → player |
-| F8 | `PAUSE1` 0x83 | toggle pause (`ModeSwitch.cpp`) |
-| F6 | `JUMP_ONE_FRAME` 0x87 | one frame, only while paused |
-| PageUp / PageDown | `TIME_FORWARD` 0x8A / `TIME_BACKWARD` 0x8B | ±60 s game clock; Shift: `TIME_FORWARDFAST` 0x88 (+3600 s) or 60× backward |
-| Minus / Plus / Backspace | — | game speed 0.01–4× by writing the time-scale globals directly (int step ÷100 + float) |
+## Uninstall
 
-The time-scale step and the paused flag are found by signature
-(`TIMESCALE_DOWN` handler, `JUMP_ONE_FRAME` site). The overlay's Photo mode
-section has the same controls plus a speed slider.
+Delete `xinput1_4.dll`, `AWTweaks.addon64`, `awtweaks.ini`, `awtweaks.log`,
+`awtweaks.prev.log` and `awtweaks_dump.txt` from the game folder. The game
+itself is never modified on disk.
 
-### Hotkeys and presets
-`ToggleKey` (F10) A/B-toggles every override and `LightShadowScale` back to
-stock; `PresetKey` (F9) cycles `[Preset:Name]` sections, which apply on top of
-`[Tweaks]` (`Preset=` picks the startup one).
+## Troubleshooting
 
-Verified against build 34885 (`.keystoneBuild`). If a patch changes the
-constructor the log says "signature not found" and the mod stays idle.
+- **Nothing changes in game:** check `awtweaks.log` in the game folder. "Mod
+  idle" or "signature not found" means this game version isn't supported.
+- **Frame rate too low:** switch to Ultra+ (F9) or set `AtlasScale=1`.
+- **Out of video memory / stutter:** set `AtlasScale=1` under `[Shadows]`.
+- **Controller conflicts:** the mod passes all controller input through to the
+  game; it only adds keyboard keys. Change any key in `awtweaks.ini`.
 
-## Build
-```powershell
-winget install MartinStorsjo.LLVM-MinGW.UCRT
-.\build.ps1 -Install "E:\Non-Steam Games\AlanWakeRemastered"
-```
+## Known issues
 
-## Test
-`test\harness.cpp` fakes the registry (same signature and layout) and checks
-float/bool/color writes, late registration, enforce, hot reload, clamping,
-restore-on-removal, XInput forwarding and the dump.
+- **With ReShade installed, Windows logs a crash when the game closes.** This
+  is ReShade on this game – it happens with the mod removed too – and only
+  after the game has finished shutting down; nothing is lost.
+- **Time of day** is ignored in scenes that script their own lighting.
+- **The FPS comparison** shows no difference if your frame rate is capped
+  (V-Sync, NVIDIA Reflex or a driver limit); lift the cap while measuring.
+
+## License
+
+MIT – see `LICENSE`. Includes ReShade API and Dear ImGui headers, see
+`THIRD_PARTY_NOTICES.txt`. Technical notes on how the mod works are in
+`docs/TECHNICAL.md` in the source repository.
+
+Not affiliated with Remedy Entertainment.

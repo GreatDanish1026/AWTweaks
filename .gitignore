@@ -12,3 +12,6 @@ backup/
 awtweaks.log
 awtweaks.prev.log
 awtweaks_dump.txt
+
+# Release packages (package.ps1)
+dist/

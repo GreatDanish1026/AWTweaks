@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "../awtweaks_api.h"
+#include "../version.h"
 
 extern "C" __declspec(dllexport) const char* NAME = "AWTweaks";
 extern "C" __declspec(dllexport) const char* DESCRIPTION =
@@ -204,6 +205,7 @@ void DrawFps(const char* name) {
 // The everyday part: mod switch and presets. Groups with several presets are
 // exclusive (radio buttons plus a "none" choice); single presets are checkboxes.
 void DrawSimple(const AwtStatus& st) {
+    ImGui::TextDisabled("AWTweaks " AWT_VERSION_STRING);
     bool on = !st.modOff;
     if (ImGui::Checkbox("Mod enabled", &on)) g_api.setModOn(on ? 1 : 0);
     ImGui::SameLine();
