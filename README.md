@@ -66,6 +66,12 @@ Every key can be changed in `awtweaks.ini`.
 | Fog and rain | half resolution | full | full |
 | Grass draw distance | 60 m | 90 m | 240 m |
 | Model detail distance | stock | 1.7× | 3.3× |
+| Shadow edge smoothing (samples) | 10 | 16 | 32 |
+| **Frame-rate cost vs Stock** | – | **about 5%** | **about 10%** |
+
+Costs were measured with the overlay's *Measure FPS of each* button on one
+scene (paused, same view): Stock 151, Ultra+ 144, Cinematic 135 FPS. Your
+numbers will vary with hardware and scene; run the same button to check yours.
 
 *Darker Nights* can be combined with any of them: less automatic brightening at
 night, no invisible light following Alan, dimmer fill lights on characters, and
