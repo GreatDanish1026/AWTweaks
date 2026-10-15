@@ -160,7 +160,27 @@ constexpr size_t kOffType = 0xA8;
 constexpr size_t kOffValue = 0xB0;
 constexpr size_t kObjSize = 0xC0;  // enough for float4 value
 
-enum TweakType : int { kBool = 0, kFloat = 1, kColor = 3 };
+enum TweakType : int { kBool = 0, kFloat = 1, kColor = 3, kList = 5 };
+
+// TweakableList (type 5): a vector of engine strings plus the selected index.
+//   +0xB0 items (0xA8-byte strings, text pointer first)  +0xB8 count  +0xD0 int selected
+constexpr size_t kOffListItems = 0xB0, kOffListCount = 0xB8, kOffListIndex = 0xD0, kListItemStride = 0xA8;
+
+int ListCount(const uint8_t* obj) {
+    if (!Readable(obj + kOffListItems, 0x28)) return 0;
+    size_t n = *reinterpret_cast<const size_t*>(obj + kOffListCount);
+    return n <= 64 ? (int)n : 0;
+}
+
+const char* ListItem(const uint8_t* obj, int i) {
+    if (i < 0 || i >= ListCount(obj)) return nullptr;
+    auto items = *reinterpret_cast<const uint8_t* const*>(obj + kOffListItems);
+    if (!Readable(items + (size_t)i * kListItemStride, 8)) return nullptr;
+    const char* text = *reinterpret_cast<const char* const*>(items + (size_t)i * kListItemStride);
+    return Readable(text, 1) ? text : nullptr;
+}
+
+int& ListIndex(uint8_t* obj) { return *reinterpret_cast<int*>(obj + kOffListIndex); }
 
 uint8_t** g_registry = nullptr;
 int* g_registryCount = nullptr;
@@ -914,7 +934,8 @@ bool ParseOverride(const std::string& v, Override* o) {
         p = end;
         while (*p == ' ' || *p == '\t' || *p == ',') ++p;
     }
-    return o->isBool || o->count > 0;
+    // Anything else is kept as text: list tweakables take an option name.
+    return !v.empty();
 }
 
 // Named keys accepted in the ini (case-insensitive) and shown back to the user.
@@ -1230,7 +1251,8 @@ std::deque<Known> g_known;
 std::unordered_map<std::string, size_t> g_knownIndex;
 
 void Restore(Known& k) {
-    memcpy(k.obj + kOffValue, k.original, k.type == kBool ? 1 : k.type == kFloat ? 4 : 16);
+    if (k.type == kList) memcpy(k.obj + kOffListIndex, k.original, 4);
+    else memcpy(k.obj + kOffValue, k.original, k.type == kBool ? 1 : k.type == kFloat ? 4 : 16);
     k.touched = false;
     Log("  %s restored to original", k.name.c_str());
 }
@@ -1283,6 +1305,40 @@ bool Apply(const Known& k, const Override& o, const Config& cfg, bool verbose) {
             memcpy(f, want, sizeof(want));
             return true;
         }
+        case kList: {
+            // An option name (case-insensitive) or its 0-based index.
+            const int n = ListCount(k.obj);
+            int want = -1;
+            for (int i = 0; i < n && want < 0; ++i)
+                if (const char* item = ListItem(k.obj, i))
+                    if (Lower(item) == Lower(o.raw)) want = i;
+            if (want < 0 && o.count) want = (int)o.f[0];
+            if (want < 0 || want >= n) {
+                // A typo shouldn't leave an older choice in place: fall back to stock.
+                memcpy(&want, k.original, 4);
+                if (verbose) {
+                    std::string opts;
+                    for (int i = 0; i < n; ++i)
+                        if (const char* item = ListItem(k.obj, i)) opts += (i ? " | " : "") + std::string(item);
+                    const char* stock = ListItem(k.obj, want);
+                    Log("  %s: '%s' is not an option (%s); using stock %s", k.name.c_str(), o.raw.c_str(),
+                        opts.c_str(), stock ? stock : "?");
+                }
+                int& cur = ListIndex(k.obj);
+                if (cur == want) return false;
+                cur = want;
+                return true;
+            }
+            int& cur = ListIndex(k.obj);
+            if (cur == want) return false;
+            if (verbose) {
+                const char* from = ListItem(k.obj, cur);
+                const char* to = ListItem(k.obj, want);
+                Log("  %s: %s -> %s", k.name.c_str(), from ? from : "?", to ? to : "?");
+            }
+            cur = want;
+            return true;
+        }
         default:
             if (verbose) Log("  %s has unsupported type %d; skipped", k.name.c_str(), k.type);
             return false;
@@ -1318,6 +1374,18 @@ void Dump(const std::deque<Known>& known, const std::wstring& path) {
                 if (k->touched) fprintf(f, ", now %g, %g, %g, %g", cur[0], cur[1], cur[2], cur[3]);
                 fputc('\n', f);
                 break;
+            case kList: {
+                int orig;
+                memcpy(&orig, k->original, 4);
+                const char* item = ListItem(k->obj, orig);
+                fprintf(f, "%s=%s    ; list:", k->name.c_str(), item ? item : "?");
+                for (int i = 0; i < ListCount(k->obj); ++i)
+                    if (const char* it = ListItem(k->obj, i)) fprintf(f, "%s %s", i ? " |" : "", it);
+                if (k->touched)
+                    if (const char* now = ListItem(k->obj, ListIndex(k->obj))) fprintf(f, ", now %s", now);
+                fputc('\n', f);
+                break;
+            }
             default: fprintf(f, ";%s    ; type %d (not editable)\n", k->name.c_str(), k->type); break;
         }
     }
@@ -1612,7 +1680,8 @@ DWORD WINAPI Worker(LPVOID) {
             if (!name) continue;
             seen.insert(obj);
             Known k{obj, name, TweakType(obj), {}, false};
-            memcpy(k.original, obj + kOffValue, sizeof(k.original));
+            if (k.type == kList) memcpy(k.original, obj + kOffListIndex, 4);
+            else memcpy(k.original, obj + kOffValue, sizeof(k.original));
             g_knownIndex[k.name] = known.size();
             known.push_back(std::move(k));
             fresh.push_back(known.size() - 1);
@@ -1631,7 +1700,12 @@ DWORD WINAPI Worker(LPVOID) {
                 bool first = reported.insert(k.name).second;
                 bool changed = Apply(k, it->second, cfg, first);
                 if (changed) k.touched = true;
-                if (first && !changed) Log("  %s already = %s", k.name.c_str(), it->second.raw.c_str());
+                if (first && !changed) {
+                    const char* shown = it->second.raw.c_str();
+                    if (k.type == kList)  // the option actually selected, not what was typed
+                        if (const char* item = ListItem(k.obj, ListIndex(k.obj))) shown = item;
+                    Log("  %s already = %s", k.name.c_str(), shown);
+                }
             };
             if (reapplyAll || cfg.enforce) {
                 for (auto& k : known) applyOne(k);
@@ -1726,8 +1800,10 @@ extern "C" void WINAPI XInputEnable(BOOL enable) {
 
 namespace {
 
-std::string FormatValue(int type, const float* v) {
+std::string FormatValue(const Known* k, int type, const float* v) {
     char buf[96];
+    if (type == kList && k)
+        if (const char* item = ListItem(k->obj, (int)v[0])) return item;
     if (type == kBool) return v[0] != 0.0f ? "true" : "false";
     if (type == kColor) snprintf(buf, sizeof(buf), "%g, %g, %g, %g", v[0], v[1], v[2], v[3]);
     else snprintf(buf, sizeof(buf), "%g", v[0]);
@@ -1837,6 +1913,26 @@ extern "C" int __cdecl AWT_Snapshot(AwtInfo* out, int cap) {
         } else if (k.type == kColor) {
             memcpy(o.value, v, 16);
             memcpy(o.original, k.original, 16);
+        } else if (k.type == kList) {
+            int orig;
+            memcpy(&orig, k.original, 4);
+            o.value[0] = (float)ListIndex(k.obj);
+            o.original[0] = (float)orig;
+            o.max = (float)(ListCount(k.obj) - 1);
+        }
+        o.items[0] = 0;
+        if (k.type == kList) {
+            // Option names, newline-separated, as many as fit.
+            size_t used = 0;
+            for (int j = 0; j < ListCount(k.obj); ++j) {
+                const char* item = ListItem(k.obj, j);
+                size_t len = item ? strlen(item) : 0;
+                if (used + len + 2 > sizeof(o.items)) break;
+                memcpy(o.items + used, item, len);
+                used += len;
+                o.items[used++] = '\n';
+                o.items[used] = 0;
+            }
         }
     }
     ReleaseSRWLockShared(&g_knownLock);
@@ -1856,8 +1952,8 @@ extern "C" int __cdecl AWT_Set(const char* name, const float* v) {
         o.isBool = k.type == kBool;
         o.b = v[0] != 0.0f;
         if (k.type == kFloat) o.f[0] = SafeCascadeResolution(k.name, o.f[0]);
-        o.raw = FormatValue(k.type, o.f);
-        if (k.type == kBool || k.type == kFloat || k.type == kColor) {
+        o.raw = FormatValue(&k, k.type, o.f);
+        if (k.type == kBool || k.type == kFloat || k.type == kColor || k.type == kList) {
             g_ui[k.name] = o;
             if (!g_modOff) {  // show it this frame; the worker keeps enforcing it
                 Config c;
@@ -1891,11 +1987,12 @@ extern "C" int __cdecl AWT_SaveToIni(void) {
     AcquireSRWLockExclusive(&g_knownLock);
     for (auto& [name, o] : g_ui) {
         auto it = g_knownIndex.find(name);
-        int type = it != g_knownIndex.end() ? g_known[it->second].type : kFloat;
+        const Known* kp = it != g_knownIndex.end() ? &g_known[it->second] : nullptr;
+        int type = kp ? kp->type : kFloat;
         // A key the active preset sets would be shadowed in [Tweaks], so save it there.
         auto owner = g_presetOf.find(name);  // the active preset whose value it replaced
         items.emplace_back(owner != g_presetOf.end() ? "Preset:" + owner->second : "Tweaks", name,
-                           FormatValue(type, o.f));
+                           FormatValue(kp, type, o.f));
     }
     ReleaseSRWLockExclusive(&g_knownLock);
     if (items.empty()) return 0;

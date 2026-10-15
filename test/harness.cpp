@@ -110,7 +110,7 @@ struct FakeAllocator {
 using AllocateFn = void*(__fastcall*)(void*, int, int, uint8_t);
 
 struct alignas(16) Obj {
-    uint8_t raw[0xC0];
+    uint8_t raw[0xE0];  // lists keep their selected index at +0xD0
 };
 static Obj objs[8];
 static char names[8][128];
@@ -557,6 +557,61 @@ int wmain(int argc, wchar_t** argv) {
         CHECK(F(5)[0] == 2048.0f);
     }
 
+    // List tweakable (type 5): engine strings at +0xB0 (0xA8 stride, text first),
+    // count at +0xB8, selected index at +0xD0.
+    {
+        static const char* kOpts[] = {"Jitter8", "Poisson Disk", "Optimised PCF", "Spiral Gradient",
+                                      "Vogel Disk Gradient"};
+        static uint8_t items[5 * 0xA8] = {};
+        for (int i = 0; i < 5; ++i) *(const char**)(items + i * 0xA8) = kOpts[i];
+        uint8_t* lst = Make(6, "Shadow Filtering d3t:Function", 5);
+        *(uint8_t**)(lst + 0xB0) = items;
+        *(size_t*)(lst + 0xB8) = 5;
+        *(int*)(lst + 0xD0) = 4;
+        g_reg[6] = lst;
+        g_cnt = 7;
+        Sleep(100);
+        auto snapshot = (PFN_AWT_Snapshot)GetProcAddress(m, "AWT_Snapshot");
+        auto set = (PFN_AWT_Set)GetProcAddress(m, "AWT_Set");
+        auto save = (PFN_AWT_SaveToIni)GetProcAddress(m, "AWT_SaveToIni");
+        static AwtInfo snap[16];
+        int n = snapshot(snap, 16);
+        AwtInfo* li = nullptr;
+        for (int i = 0; i < n; ++i)
+            if (!strcmp(snap[i].name, "Shadow Filtering d3t:Function")) li = &snap[i];
+        CHECK(li && li->type == AWT_LIST && li->value[0] == 4.0f && li->original[0] == 4.0f && li->max == 4.0f);
+        CHECK(li && !strcmp(li->items, "Jitter8\nPoisson Disk\nOptimised PCF\nSpiral Gradient\nVogel Disk Gradient\n"));
+        float pick = 1.0f;  // overlay picks "Poisson Disk"
+        CHECK(set("Shadow Filtering d3t:Function", &pick) == 1 && *(int*)(lst + 0xD0) == 1);
+        CHECK(save() == 1);
+        Sleep(300);
+        FILE* fi = _wfopen((dir + L"\\awtweaks.ini").c_str(), L"rb");
+        static char ini[8192] = {};
+        if (fi) fread(ini, 1, sizeof(ini) - 1, fi), fclose(fi);
+        CHECK(strstr(ini, "Shadow Filtering d3t:Function=Poisson Disk") != nullptr);  // saved by name
+        CHECK(*(int*)(lst + 0xD0) == 1);  // reloaded from the ini by name
+
+        // By index, by name with other case, and a bad name (rejected, logged).
+        WriteIni(dir + L"\\awtweaks.ini",
+                 "[Settings]\nPollMs=20\n[Shadows]\nAtlasScale=2\n[Tweaks]\nShadow Filtering d3t:Function=2\n");
+        Sleep(300);
+        CHECK(*(int*)(lst + 0xD0) == 2);
+        WriteIni(dir + L"\\awtweaks.ini",
+                 "[Settings]\nPollMs=20\n[Shadows]\nAtlasScale=2\n[Tweaks]\nShadow Filtering d3t:Function=spiral gradient\n");
+        Sleep(300);
+        CHECK(*(int*)(lst + 0xD0) == 3);
+        WriteIni(dir + L"\\awtweaks.ini",
+                 "[Settings]\nPollMs=20\n[Shadows]\nAtlasScale=2\n[Tweaks]\nShadow Filtering d3t:Function=Nope\n");
+        Sleep(300);
+        CHECK(*(int*)(lst + 0xD0) == 4);  // invalid option -> stock option, not the previous one
+        // Put back the ini the later dump checks expect.
+        WriteIni(dir + L"\\awtweaks.ini",
+                 "[Settings]\nClampToRange=true\nPollMs=20\n[Tweaks]\nHBAO:Bias=5\n"
+                 "Shadows:Ultra Cascade 4 Cull Radius=0.45\n");
+        Sleep(300);
+        CHECK(*(int*)(lst + 0xD0) == 4);
+    }
+
     Sleep(3500);  // let the dump fire
     FILE* f = _wfopen((dir + L"\\awtweaks_dump.txt").c_str(), L"rb");
     CHECK(f != nullptr);
@@ -580,6 +635,9 @@ int wmain(int argc, wchar_t** argv) {
         CHECK(strstr(log, "flag=1 calls=1 failed=0 w=4096..4096 h=4096..4096") != nullptr);
         CHECK(strstr(log, "LightShadowScale 2 -> 1") != nullptr);  // live reload
         CHECK(strstr(log, "WARNING: Shadows:Ultra High Resolution=8192 capped to 4096") != nullptr);
+        CHECK(strstr(log, "Shadow Filtering d3t:Function: Poisson Disk -> Optimised PCF") != nullptr);
+        CHECK(strstr(log, "Spiral Gradient | Vogel Disk Gradient); using stock Vogel Disk Gradient") != nullptr);
+        CHECK(strstr(log, "already = Nope") == nullptr);
         CHECK(strstr(log, "3 presets, toggle=F11 preset key=F12") != nullptr);
         CHECK(strstr(log, "HBAO:Radius In Meters: 50 -> 90") != nullptr);
         // Frame 1's fake original copies no placements (-1s => bad); frame 3 overflows.

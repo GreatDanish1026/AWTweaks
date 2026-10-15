@@ -99,7 +99,21 @@ std::string Lower(std::string s) {
     return s;
 }
 
-bool Editable(const AwtInfo& t) { return t.type == AWT_BOOL || t.type == AWT_FLOAT || t.type == AWT_COLOR; }
+bool Editable(const AwtInfo& t) {
+    return t.type == AWT_BOOL || t.type == AWT_FLOAT || t.type == AWT_COLOR || t.type == AWT_LIST;
+}
+
+// The n-th option of a list tweakable (items are newline-separated), or "?".
+std::string ListOption(const AwtInfo& t, int n) {
+    const char* p = t.items;
+    for (int i = 0; *p; ++i) {
+        const char* e = strchr(p, '\n');
+        if (!e) break;
+        if (i == n) return std::string(p, e - p);
+        p = e + 1;
+    }
+    return "?";
+}
 
 bool Changed(const AwtInfo& t) {
     if (t.source != AWT_SRC_NONE) return true;
@@ -147,6 +161,19 @@ void DrawItem(const AwtInfo& t, const std::string& label) {
             edited = ImGui::DragFloat("##v", &v[0], 0.01f, 0.0f, 0.0f, "%.4g", ImGuiSliderFlags_None);
     } else if (t.type == AWT_COLOR) {
         edited = ImGui::ColorEdit4("##v", v, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+    } else if (t.type == AWT_LIST) {
+        // Combo wants the options separated by '\0' and ended by an extra '\0'.
+        char opts[sizeof(t.items) + 1];
+        size_t n = strlen(t.items);
+        memcpy(opts, t.items, n);
+        for (size_t i = 0; i < n; ++i)
+            if (opts[i] == '\n') opts[i] = '\0';
+        opts[n] = '\0';
+        int sel = (int)v[0];
+        if (ImGui::Combo("##v", &sel, opts, 10)) {
+            v[0] = (float)sel;
+            edited = true;
+        }
     } else {
         ImGui::TextDisabled("(type %d, read-only)", t.type);
     }
@@ -162,6 +189,8 @@ void DrawItem(const AwtInfo& t, const std::string& label) {
     if (ImGui::IsItemHovered() && Editable(t)) {
         if (t.type == AWT_BOOL) ImGui::SetTooltip("%s\nstock: %s", t.name, t.original[0] ? "true" : "false");
         else if (t.type == AWT_FLOAT) ImGui::SetTooltip("%s\nstock: %g  (range %g..%g)", t.name, t.original[0], t.min, t.max);
+        else if (t.type == AWT_LIST)
+            ImGui::SetTooltip("%s\nstock: %s", t.name, ListOption(t, (int)t.original[0]).c_str());
         else ImGui::SetTooltip("%s\nstock: %g, %g, %g, %g", t.name, t.original[0], t.original[1], t.original[2], t.original[3]);
     }
     if (t.source == AWT_SRC_OVERLAY) {

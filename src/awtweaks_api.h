@@ -3,9 +3,9 @@
 #pragma once
 #include <cstdint>
 
-#define AWT_API_VERSION 4
+#define AWT_API_VERSION 5
 
-enum AwtType : int32_t { AWT_BOOL = 0, AWT_FLOAT = 1, AWT_COLOR = 3 };  // others: read-only
+enum AwtType : int32_t { AWT_BOOL = 0, AWT_FLOAT = 1, AWT_COLOR = 3, AWT_LIST = 5 };  // others: read-only
 enum AwtSource : int32_t { AWT_SRC_NONE = 0, AWT_SRC_TWEAKS = 1, AWT_SRC_PRESET = 2, AWT_SRC_OVERLAY = 3 };
 
 struct AwtInfo {
@@ -14,7 +14,8 @@ struct AwtInfo {
     int32_t source;      // AwtSource: who currently overrides it
     float value[4];      // current value (bool: value[0] is 0/1; float: value[0])
     float original[4];   // value when the engine registered it
-    float min, max;      // engine slider range (floats only)
+    float min, max;      // engine slider range (floats); list: 0 .. option count - 1
+    char items[192];     // list options, each followed by a newline (lists only)
 };
 
 struct AwtStatus {
@@ -69,7 +70,8 @@ extern "C" {
 typedef int(__cdecl* PFN_AWT_GetStatus)(AwtStatus* out);
 // Copies up to `cap` entries; returns the total count.
 typedef int(__cdecl* PFN_AWT_Snapshot)(AwtInfo* out, int cap);
-// Overlay override: bool uses v[0] != 0, float v[0], color v[0..3]. Applies at once.
+// Overlay override: bool uses v[0] != 0, float v[0], color v[0..3], list v[0] = option index.
+// Applies at once.
 typedef int(__cdecl* PFN_AWT_Set)(const char* name, const float* v);
 // Drops the overlay override for `name` (nullptr = all); ini/preset/stock value returns.
 typedef int(__cdecl* PFN_AWT_Reset)(const char* name);
