@@ -35,8 +35,12 @@ struct Api {
     PFN_AWT_SetPresetActive setPreset = nullptr;
     PFN_AWT_SetModOn setModOn = nullptr;
     PFN_AWT_SaveStartupPresets saveStartup = nullptr;
+    PFN_AWT_GetPhoto photo = nullptr;
+    PFN_AWT_PhotoAction photoAction = nullptr;
+    PFN_AWT_SetTimeScale setTimeScale = nullptr;
     bool ok() const {
-        return status && snapshot && set && reset && save && presets && setPreset && setModOn && saveStartup;
+        return status && snapshot && set && reset && save && presets && setPreset && setModOn && saveStartup &&
+               photo && photoAction && setTimeScale;
     }
 } g_api;
 
@@ -60,6 +64,9 @@ bool ResolveApi() {
     g_api.setPreset = reinterpret_cast<PFN_AWT_SetPresetActive>(GetProcAddress(m, "AWT_SetPresetActive"));
     g_api.setModOn = reinterpret_cast<PFN_AWT_SetModOn>(GetProcAddress(m, "AWT_SetModOn"));
     g_api.saveStartup = reinterpret_cast<PFN_AWT_SaveStartupPresets>(GetProcAddress(m, "AWT_SaveStartupPresets"));
+    g_api.photo = reinterpret_cast<PFN_AWT_GetPhoto>(GetProcAddress(m, "AWT_GetPhoto"));
+    g_api.photoAction = reinterpret_cast<PFN_AWT_PhotoAction>(GetProcAddress(m, "AWT_PhotoAction"));
+    g_api.setTimeScale = reinterpret_cast<PFN_AWT_SetTimeScale>(GetProcAddress(m, "AWT_SetTimeScale"));
     return g_api.ok();
 }
 
@@ -235,6 +242,59 @@ void DrawSimple(const AwtStatus& st) {
     }
 }
 
+// Photo mode: free camera, pause / frame step, game speed and time of day.
+void DrawPhoto() {
+    AwtPhoto ph{};
+    g_api.photo(&ph);
+    ImGui::SeparatorText("Photo mode");
+    if (!ph.freeCamAvailable && !ph.photoAvailable) {
+        ImGui::TextDisabled("Off: set Enabled=true under [FreeCamera] / [PhotoMode] in awtweaks.ini and restart.");
+        return;
+    }
+    ImGui::PushID("photo");
+    if (ph.freeCamAvailable) {
+        const char* cam = ph.cameraMode == 1 || ph.cameraMode == 6 ? "Free camera: flying  (click: freeze it)"
+                          : ph.cameraMode == 2                    ? "Free camera: frozen, Alan playable  (click: off)"
+                          : ph.cameraMode == 0                    ? "Free camera: off  (click: fly)"
+                                                                  : "Free camera: unavailable during this scene";
+        ImGui::BeginDisabled(ph.cameraMode > 2 && ph.cameraMode != 6);
+        if (ImGui::Button(cam)) g_api.photoAction(AWT_PHOTO_FREECAM);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Fly: move keys / left stick, mouse / right stick to look,\n"
+                              "Space up, Left Ctrl down, Left Shift faster, Left Alt slower.");
+    }
+    if (ph.photoAvailable) {
+        if (ImGui::Button(ph.paused ? "Resume" : "Pause")) g_api.photoAction(AWT_PHOTO_PAUSE);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!ph.paused);
+        if (ImGui::Button("Step one frame")) g_api.photoAction(AWT_PHOTO_STEP);
+        ImGui::EndDisabled();
+
+        float ts = ph.timeScale;
+        ImGui::SetNextItemWidth(AvailWidth() * 0.55f);
+        if (ImGui::SliderFloat("Game speed", &ts, 0.01f, 4.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
+            g_api.setTimeScale(ts);
+        ImGui::SameLine();
+        if (ImGui::Button("1x")) g_api.setTimeScale(1.0f);
+
+        ImGui::TextUnformatted("Time of day");
+        ImGui::SameLine();
+        if (ImGui::Button("-1 h")) g_api.photoAction(AWT_PHOTO_TIME_MINUS_HOUR);
+        ImGui::SameLine();
+        if (ImGui::Button("-1 min")) g_api.photoAction(AWT_PHOTO_TIME_MINUS_MINUTE);
+        ImGui::SameLine();
+        if (ImGui::Button("+1 min")) g_api.photoAction(AWT_PHOTO_TIME_PLUS_MINUTE);
+        ImGui::SameLine();
+        if (ImGui::Button("+1 h")) g_api.photoAction(AWT_PHOTO_TIME_PLUS_HOUR);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Some scenes script their own lighting and may ignore this.");
+    }
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("Keys: %s", ph.keys);
+    ImGui::PopTextWrapPos();
+    ImGui::PopID();
+}
+
 // Expert part: every engine tweakable, collapsed by default.
 void DrawAdvanced(const AwtStatus& st, int n) {
     char header[128];
@@ -325,6 +385,8 @@ void DrawOverlay(reshade::api::effect_runtime*) {
     }
 
     DrawSimple(st);
+    ImGui::Spacing();
+    DrawPhoto();
     ImGui::Spacing();
     DrawAdvanced(st, n);
 }

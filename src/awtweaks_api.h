@@ -3,7 +3,7 @@
 #pragma once
 #include <cstdint>
 
-#define AWT_API_VERSION 2
+#define AWT_API_VERSION 3
 
 enum AwtType : int32_t { AWT_BOOL = 0, AWT_FLOAT = 1, AWT_COLOR = 3 };  // others: read-only
 enum AwtSource : int32_t { AWT_SRC_NONE = 0, AWT_SRC_TWEAKS = 1, AWT_SRC_PRESET = 2, AWT_SRC_OVERLAY = 3 };
@@ -23,6 +23,26 @@ struct AwtStatus {
     int32_t overlayEdits;    // unsaved overlay overrides
     int32_t registered;      // tweakables registered so far
     char preset[64];         // active presets, comma-separated, "" = none
+};
+
+// v3: photo mode.
+struct AwtPhoto {
+    int32_t freeCamAvailable;  // [FreeCamera] hooks installed
+    int32_t photoAvailable;    // [PhotoMode] globals found
+    int32_t cameraMode;        // 0 player, 1 free camera (flying), 2 frozen (Alan playable), other = game camera
+    int32_t paused;
+    float timeScale;           // 1.0 = normal speed
+    char keys[160];            // human-readable key summary for the UI
+};
+
+enum AwtPhotoAction : int32_t {
+    AWT_PHOTO_FREECAM = 0,     // cycle: player -> fly -> frozen -> player
+    AWT_PHOTO_PAUSE = 1,       // toggle
+    AWT_PHOTO_STEP = 2,        // one frame (while paused)
+    AWT_PHOTO_TIME_MINUS_HOUR = 3,
+    AWT_PHOTO_TIME_MINUS_MINUTE = 4,
+    AWT_PHOTO_TIME_PLUS_MINUTE = 5,
+    AWT_PHOTO_TIME_PLUS_HOUR = 6,
 };
 
 struct AwtPreset {
@@ -52,4 +72,8 @@ typedef int(__cdecl* PFN_AWT_SetPresetActive)(const char* name, int active);
 typedef int(__cdecl* PFN_AWT_SetModOn)(int on);
 // Saves the active presets as the ini's startup Preset= line.
 typedef int(__cdecl* PFN_AWT_SaveStartupPresets)(void);
+// v3: photo mode.
+typedef int(__cdecl* PFN_AWT_GetPhoto)(AwtPhoto* out);
+typedef int(__cdecl* PFN_AWT_PhotoAction)(int action);   // AwtPhotoAction
+typedef int(__cdecl* PFN_AWT_SetTimeScale)(float scale);  // 0.01 .. 4
 }

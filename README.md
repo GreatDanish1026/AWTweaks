@@ -106,6 +106,22 @@ add-on talks to `xinput1_4.dll` through the C API in `src/awtweaks_api.h`
 Dear ImGui 1.92.5 (the version that ReShade's overlay table requires) are in
 `third_party/` with their licences.
 
+### Photo mode (`[PhotoMode]`)
+The game still polls its developer controls every frame; the `isPressed`
+detour now queues "presses" per control id, each query consuming one:
+
+| Key (default) | Control | Effect |
+|---|---|---|
+| F7 | `TOGGLE_FREECAMERA` 0x7F | player → fly → frozen (Alan playable) → player |
+| F8 | `PAUSE1` 0x83 | toggle pause (`ModeSwitch.cpp`) |
+| F6 | `JUMP_ONE_FRAME` 0x87 | one frame, only while paused |
+| PageUp / PageDown | `TIME_FORWARD` 0x8A / `TIME_BACKWARD` 0x8B | ±60 s game clock; Shift: `TIME_FORWARDFAST` 0x88 (+3600 s) or 60× backward |
+| Minus / Plus / Backspace | — | game speed 0.01–4× by writing the time-scale globals directly (int step ÷100 + float) |
+
+The time-scale step and the paused flag are found by signature
+(`TIMESCALE_DOWN` handler, `JUMP_ONE_FRAME` site). The overlay's Photo mode
+section has the same controls plus a speed slider.
+
 ### Hotkeys and presets
 `ToggleKey` (F10) A/B-toggles every override and `LightShadowScale` back to
 stock; `PresetKey` (F9) cycles `[Preset:Name]` sections, which apply on top of

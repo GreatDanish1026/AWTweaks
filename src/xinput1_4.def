@@ -23,3 +23,6 @@ EXPORTS
     AWT_SetPresetActive
     AWT_SetModOn
     AWT_SaveStartupPresets
+    AWT_GetPhoto
+    AWT_PhotoAction
+    AWT_SetTimeScale

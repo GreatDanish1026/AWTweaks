@@ -48,6 +48,16 @@ __attribute__((section(".text"), used)) static uint8_t g_isPressed[] = {
     0xC3,                                  // ret
     0x30, 0xC0, 0xC3};                     // early: xor al, al; ret
 
+// Fake photo-mode state + copies of the code the DLL finds it through.
+struct FakeTimeScale { volatile int step; volatile float scale; };
+static FakeTimeScale g_fakeTs = {100, 1.0f};
+static volatile uint8_t g_fakePaused = 0, g_fakeStepping = 0;
+__attribute__((section(".text"), used)) static uint8_t g_tsRef[] = {
+    0x8B, 0x05, 0, 0, 0, 0, 0x83, 0xF8, 0x0A, 0x7E, 0x05, 0x83, 0xE8, 0x0A, 0xEB, 0x0F, 0xC3};
+__attribute__((section(".text"), used)) static uint8_t g_pausedRef[] = {
+    0x80, 0x3D, 0, 0, 0, 0, 0x00, 0x75, 0x09, 0x80, 0x3D, 0, 0, 0, 0, 0x00, 0x74, 0x35,
+    0x33, 0xD2, 0xB9, 0x87, 0x00, 0x00, 0x00, 0xC3};
+
 // Copy of the free-camera toggle's mode read: movsxd rax,[mode]; cmp eax,1; jne; call; neg; sbb.
 static volatile int g_fakeMode = 0;
 __attribute__((section(".text"), used)) static uint8_t g_modeRef[] = {
@@ -135,6 +145,16 @@ static void PatchSig() {
     memcpy(g_isPressed + 17, &e2, 4);
     memcpy(g_isPressed + 24, &e3, 4);
     VirtualProtect(g_isPressed, sizeof(g_isPressed), old, &old);
+    VirtualProtect(g_tsRef, sizeof(g_tsRef), PAGE_EXECUTE_READWRITE, &old);
+    int32_t p1 = (int32_t)((uint8_t*)&g_fakeTs.step - (g_tsRef + 6));
+    memcpy(g_tsRef + 2, &p1, 4);
+    VirtualProtect(g_tsRef, sizeof(g_tsRef), old, &old);
+    VirtualProtect(g_pausedRef, sizeof(g_pausedRef), PAGE_EXECUTE_READWRITE, &old);
+    int32_t p2 = (int32_t)((uint8_t*)&g_fakePaused - (g_pausedRef + 7));
+    int32_t p3 = (int32_t)((uint8_t*)&g_fakeStepping - (g_pausedRef + 16));
+    memcpy(g_pausedRef + 2, &p2, 4);
+    memcpy(g_pausedRef + 11, &p3, 4);
+    VirtualProtect(g_pausedRef, sizeof(g_pausedRef), old, &old);
     VirtualProtect(g_modeRef, sizeof(g_modeRef), PAGE_EXECUTE_READWRITE, &old);
     int32_t d4 = (int32_t)((uint8_t*)&g_fakeMode - (g_modeRef + 7));
     memcpy(g_modeRef + 3, &d4, 4);
@@ -175,6 +195,7 @@ int wmain(int argc, wchar_t** argv) {
              "Preset=dark test\nToggleKey=F11\nPresetKey=0x7B\nBeep=false\n"
              "[Debug]\nLogShadowAllocs=true\n[Shadows]\nAtlasScale=2 ; comment\nLightShadowScale=2\n"
              "[FreeCamera]\nEnabled=true\nLookSensitivity=2\nInvertPitch=true\n"
+             "[PhotoMode]\nEnabled=true\nPauseKey=Pause\nSlowerKey=NumpadMinus\n"
              "[Tweaks]\nShadows:Ultra Cascade 4 Cull Radius = 0.3 ; comment\n"
              "Fog:Half Res Mode=false\nVolumetric Light:Color=0.5, 0.25, 0.125\n"
              "HBAO:Bias=5\nHBAO:Radius In Meters=80\n"
@@ -217,6 +238,42 @@ int wmain(int argc, wchar_t** argv) {
         g_fakePressReady = nullptr;
         CHECK(isPressed(5, 0) == false);  // early-out branch
         g_fakePressReady = (void*)1;
+    }
+
+    // Photo mode: queued presses are consumed one per query; state and speed.
+    {
+        auto isPressed = (bool(__fastcall*)(int, int))(void*)(uint8_t* volatile)g_isPressed;
+        auto getPhoto = (PFN_AWT_GetPhoto)GetProcAddress(m, "AWT_GetPhoto");
+        auto action = (PFN_AWT_PhotoAction)GetProcAddress(m, "AWT_PhotoAction");
+        auto setTs = (PFN_AWT_SetTimeScale)GetProcAddress(m, "AWT_SetTimeScale");
+        CHECK(getPhoto && action && setTs);
+        AwtPhoto ph{};
+        getPhoto(&ph);
+        CHECK(ph.freeCamAvailable && ph.photoAvailable && ph.paused == 0 && ph.timeScale == 1.0f);
+        CHECK(action(AWT_PHOTO_PAUSE) == 1);
+        CHECK(isPressed(0x83, 0) == true && isPressed(0x83, 0) == false);  // exactly one press
+        CHECK(action(AWT_PHOTO_STEP) == 0);                                // not paused: refused
+        g_fakePaused = 1;
+        getPhoto(&ph);
+        CHECK(ph.paused == 1 && action(AWT_PHOTO_STEP) == 1 && isPressed(0x87, 0) && !isPressed(0x87, 0));
+        g_fakePaused = 0;
+        action(AWT_PHOTO_TIME_MINUS_HOUR);  // no TIME_BACKWARDFAST handler: 60 x TIME_BACKWARD
+        int n = 0;
+        while (isPressed(0x8B, 0) && n < 100) ++n;
+        CHECK(n == 60);
+        action(AWT_PHOTO_TIME_PLUS_HOUR);
+        CHECK(isPressed(0x88, 0) && !isPressed(0x88, 0));
+        action(AWT_PHOTO_FREECAM);
+        CHECK(isPressed(0x7F, 0) && !isPressed(0x7F, 0));
+        CHECK(isPressed(5, 0) == true);  // unrelated controls still pass through
+        CHECK(setTs(0.25f) == 1 && g_fakeTs.step == 25 && g_fakeTs.scale == 0.25f);
+        setTs(10.0f);
+        CHECK(g_fakeTs.step == 400 && g_fakeTs.scale == 4.0f);  // clamped to 4x
+        setTs(0.0f);
+        CHECK(g_fakeTs.step == 1);  // clamped to 0.01x
+        setTs(1.0f);
+        getPhoto(&ph);
+        CHECK(ph.timeScale == 1.0f && strstr(ph.keys, "Pause Pause") && strstr(ph.keys, "Speed NumpadMinus/Plus/Backspace"));
     }
 
     // Atlas patch: 0x1000/0x800 immediates doubled.

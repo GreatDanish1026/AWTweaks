@@ -17,7 +17,7 @@ New-Item -ItemType Directory -Force "$root\bin" | Out-Null
 # dropped AtlasScale and froze the game. Fail the build instead of shipping that.
 $ini = Get-Content "$root\awtweaks.ini" -Raw
 $required = @('(?m)^\[Settings\]', '(?m)^Preset=', '(?m)^\[Shadows\]', '(?m)^AtlasScale=', '(?m)^LightShadowScale=',
-              '(?m)^\[FreeCamera\]', '(?m)^\[Debug\]', '(?m)^\[Tweaks\]', '(?m)^\[Preset:')
+              '(?m)^\[FreeCamera\]', '(?m)^\[PhotoMode\]', '(?m)^\[Debug\]', '(?m)^\[Tweaks\]', '(?m)^\[Preset:')
 $missing = $required | Where-Object { $ini -notmatch $_ }
 if ($missing) { throw "awtweaks.ini is missing: $($missing -join ', ')" }
 & $cxx --target=x86_64-w64-mingw32 -std=c++17 -O2 -shared -static -s `

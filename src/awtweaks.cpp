@@ -576,18 +576,66 @@ float __fastcall GetAxisHook(int id, int arg) {
     }
 }
 
-// bool isPressed(int control): the free-camera toggle (run every frame by the
-// game) asks it for TOGGLE_FREECAMERA (127). Debug controls never fire on PC even
-// when bound in keybinds.xml, so our hotkey sets a flag and the next query for
-// 127 answers true once - the game then switches cameras on its own thread.
-constexpr int kToggleFreeCamera = 0x7F;
+// bool isPressed(int control): the game still polls its developer controls every
+// frame, but they never fire on PC (even when bound in keybinds.xml). Our hotkeys
+// queue "presses"; each query for that control consumes one and answers true, so
+// the game runs its own handler on its own thread.
+//   0x7F TOGGLE_FREECAMERA   0x83 PAUSE1   0x87 JUMP_ONE_FRAME (only while paused)
+//   0x88 TIME_FORWARDFAST (+3600 s)   0x8A TIME_FORWARD (+60 s)   0x8B TIME_BACKWARD (-60 s)
+// (TIME_BACKWARDFAST 0x89 has no handler; -1 hour queues 60 TIME_BACKWARDs.)
+enum DebugAction : int {
+    kToggleFreeCamera = 0x7F,
+    kPause = 0x83,
+    kStepFrame = 0x87,
+    kTimeForwardHour = 0x88,
+    kTimeForward = 0x8A,
+    kTimeBackward = 0x8B,
+};
 using IsPressedFn = bool(__fastcall*)(int, int);
 IsPressedFn g_isPressedTrampoline = nullptr;
-volatile LONG g_freeCamTogglePending = 0;
+volatile LONG g_pendingPress[256] = {};
+
+void QueuePress(int id, int count = 1) {
+    if (id >= 0 && id < 256) InterlockedExchangeAdd(&g_pendingPress[id], count);
+}
 
 bool __fastcall IsPressedHook(int id, int arg) {
-    if (id == kToggleFreeCamera && InterlockedExchange(&g_freeCamTogglePending, 0)) return true;
+    if (id >= 0 && id < 256 && g_pendingPress[id] > 0) {
+        if (InterlockedDecrement(&g_pendingPress[id]) >= 0) return true;
+        InterlockedIncrement(&g_pendingPress[id]);  // lost a race with another query
+    }
     return g_isPressedTrampoline(id, arg);
+}
+
+// Photo mode state the game keeps in plain globals (found by signature):
+//   time scale: int step (100 = 1.0x) followed by the float scale the game uses;
+//   paused: byte the game's isPaused() returns.
+volatile int* g_timeScaleStep = nullptr;
+volatile float* g_timeScale = nullptr;
+volatile uint8_t* g_paused = nullptr;
+char g_photoKeys[160] = "";  // key summary for the overlay, refreshed on ini load
+
+bool LocatePhotoState() {
+    // mov eax,[step]; cmp eax,10; jle +5; sub eax,10; jmp  (TIMESCALE_DOWN handler)
+    uint8_t* ts = FindInGame({0x8B, 0x05, -1, -1, -1, -1, 0x83, 0xF8, 0x0A, 0x7E, 0x05, 0x83, 0xE8, 0x0A, 0xEB});
+    // cmp byte [paused],0; jne; cmp byte [stepping],0; je; xor edx,edx; mov ecx,87h (JUMP_ONE_FRAME)
+    uint8_t* pz = FindInGame({0x80, 0x3D, -1, -1, -1, -1, 0x00, 0x75, -1, 0x80, 0x3D, -1, -1, -1, -1, 0x00, 0x74,
+                              -1, 0x33, 0xD2, 0xB9, 0x87, 0x00, 0x00, 0x00});
+    if (ts) {
+        g_timeScaleStep = reinterpret_cast<volatile int*>(const_cast<uint8_t*>(RipTarget(ts, 2, 6)));
+        g_timeScale = reinterpret_cast<volatile float*>(g_timeScaleStep + 1);
+    }
+    if (pz) g_paused = const_cast<volatile uint8_t*>(RipTarget(pz, 2, 7));
+    Log("Photo mode: time scale %s, paused flag %s", ts ? "found" : "NOT found", pz ? "found" : "NOT found");
+    return ts && pz;
+}
+
+// Sets game speed directly (the game's own keys only step by 0.1). 1.0 = normal.
+void SetTimeScale(float s) {
+    if (!g_timeScaleStep) return;
+    s = (std::max)(0.01f, (std::min)(4.0f, s));
+    *g_timeScaleStep = (int)lroundf(s * 100.0f);
+    *g_timeScale = *g_timeScaleStep / 100.0f;
 }
 
 // Writes a 14-byte "jmp [rip+0]; dq target" at `at`, padding `len - 14` with nops.
@@ -805,6 +853,10 @@ struct Config {
     int lightShadowScale = 1;      // [Shadows]; live
     float freeCamLook = 1.0f;      // [FreeCamera] LookSensitivity; live
     int freeCamKey = VK_F7;        // [FreeCamera] ToggleKey; live
+    // [PhotoMode] keys; live
+    int pauseKey = VK_F8, stepKey = VK_F6;
+    int slowerKey = VK_OEM_MINUS, fasterKey = VK_OEM_PLUS, normalSpeedKey = VK_BACK;
+    int timeForwardKey = VK_PRIOR, timeBackwardKey = VK_NEXT;  // PageUp / PageDown
     bool freeCamInvertPitch = false;
     int toggleKey = VK_F10;        // A/B: all overrides off/on
     int presetKey = VK_F9;         // cycle presets
@@ -858,10 +910,19 @@ bool ParseOverride(const std::string& v, Override* o) {
     return o->isBool || o->count > 0;
 }
 
-// "F1".."F24", a single letter or digit, "0x.." virtual-key code, or "None".
+// Named keys accepted in the ini (case-insensitive) and shown back to the user.
+const std::pair<const char*, int> kNamedKeys[] = {
+    {"PageUp", VK_PRIOR},  {"PageDown", VK_NEXT},     {"Home", VK_HOME},          {"End", VK_END},
+    {"Insert", VK_INSERT}, {"Delete", VK_DELETE},     {"Backspace", VK_BACK},     {"Space", VK_SPACE},
+    {"Minus", VK_OEM_MINUS}, {"Plus", VK_OEM_PLUS},   {"NumpadMinus", VK_SUBTRACT}, {"NumpadPlus", VK_ADD},
+    {"Pause", VK_PAUSE},   {"ScrollLock", VK_SCROLL}};
+
+// "F1".."F24", a single letter or digit, a named key, "0x.." virtual-key code, or "None".
 int ParseKey(const std::string& v) {
     std::string l = Lower(v);
     if (l == "none" || l == "0" || l == "off") return 0;
+    for (auto& [n, vk] : kNamedKeys)
+        if (l == Lower(n)) return vk;
     if (l.size() >= 2 && l[0] == 'f' && isdigit((unsigned char)l[1])) {
         int n = atoi(l.c_str() + 1);
         return n >= 1 && n <= 24 ? VK_F1 + n - 1 : -1;
@@ -874,7 +935,10 @@ int ParseKey(const std::string& v) {
 std::string KeyName(int vk) {
     if (!vk) return "none";
     if (vk >= VK_F1 && vk <= VK_F24) return "F" + std::to_string(vk - VK_F1 + 1);
-    if (isalnum(vk)) return std::string(1, (char)vk);
+    for (auto& [n, code] : kNamedKeys)
+        if (code == vk) return n;
+    // Virtual-key codes equal ASCII only for 0-9 and A-Z (0x60+ are numpad keys).
+    if ((vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z')) return std::string(1, (char)vk);
     char buf[16];
     snprintf(buf, sizeof(buf), "0x%02X", vk);
     return buf;
@@ -963,6 +1027,23 @@ Config LoadConfig(const std::wstring& path) {
                 else cfg.freeCamKey = vk;
             }
             else if (k != "enabled") Log("ini:%d unknown free camera setting '%s'", lineNo, key.c_str());
+        } else if (section == "photomode") {
+            std::string k = Lower(key);
+            int* slot = k == "pausekey" ? &cfg.pauseKey
+                        : k == "stepkey" ? &cfg.stepKey
+                        : k == "slowerkey" ? &cfg.slowerKey
+                        : k == "fasterkey" ? &cfg.fasterKey
+                        : k == "normalspeedkey" ? &cfg.normalSpeedKey
+                        : k == "timeforwardkey" ? &cfg.timeForwardKey
+                        : k == "timebackwardkey" ? &cfg.timeBackwardKey
+                        : nullptr;
+            if (slot) {
+                int vk = ParseKey(val);
+                if (vk < 0) Log("ini:%d can't parse key '%s'", lineNo, val.c_str());
+                else *slot = vk;
+            } else if (k != "enabled") {
+                Log("ini:%d unknown photo mode setting '%s'", lineNo, key.c_str());
+            }
         } else if (section == "debug") {
             bool b;
             if (Lower(key) == "logshadowallocs" && ParseBool(val, &b)) cfg.logShadowAllocs = b;
@@ -1255,9 +1336,21 @@ DWORD WINAPI Worker(LPVOID) {
         ReleaseSRWLockExclusive(&g_knownLock);
     };
     derive();
+    auto updatePhotoKeys = [&] {
+        snprintf(g_photoKeys, sizeof(g_photoKeys),
+                 "Free cam %s | Pause %s | Step %s | Speed %s/%s/%s | Time %s/%s (+Shift: 1 h)",
+                 KeyName(base.freeCamKey).c_str(), KeyName(base.pauseKey).c_str(), KeyName(base.stepKey).c_str(),
+                 KeyName(base.slowerKey).c_str(), KeyName(base.fasterKey).c_str(),
+                 KeyName(base.normalSpeedKey).c_str(), KeyName(base.timeBackwardKey).c_str(),
+                 KeyName(base.timeForwardKey).c_str());
+    };
+    updatePhotoKeys();
     LONG lastUiVersion = g_uiVersion;
     bool relog = false;
     bool toggleDown = false, presetDown = false, freeCamDown = false;
+    bool pauseDown = false, stepDown = false, slowerDown = false, fasterDown = false, normalDown = false;
+    bool timeFwdDown = false, timeBackDown = false;
+    ULONGLONG timeFwdNext = 0, timeBackNext = 0;
     int lastCamMode = g_cameraMode ? *g_cameraMode : -1;
     g_freeCamLook = base.freeCamLook;
     g_freeCamInvertPitch = base.freeCamInvertPitch;
@@ -1308,6 +1401,7 @@ DWORD WINAPI Worker(LPVOID) {
             setLightScale(modOff ? 1 : base.lightShadowScale);
             g_freeCamLook = base.freeCamLook;
             g_freeCamInvertPitch = base.freeCamInvertPitch;
+            updatePhotoKeys();
             reported.clear();
             reapplyAll = true;
             dumpedCount = 0;  // refresh the dump's "now" markers
@@ -1325,10 +1419,61 @@ DWORD WINAPI Worker(LPVOID) {
             if (base.beep) Beep(off ? 440 : 880, 120);
         }
         if (g_isPressedTrampoline && KeyPressed(base.freeCamKey, &freeCamDown)) {
-            g_freeCamTogglePending = 1;  // consumed by the game's next TOGGLE_FREECAMERA query
+            QueuePress(kToggleFreeCamera);  // consumed by the game's next TOGGLE_FREECAMERA query
             Log("[%s] Free camera toggle requested (camera mode %d)", KeyName(base.freeCamKey).c_str(),
                 g_cameraMode ? *g_cameraMode : -1);
         }
+        // Photo mode (only if its globals/hooks were found at startup).
+        if (g_paused && KeyPressed(base.pauseKey, &pauseDown)) {
+            QueuePress(kPause);
+            Log("[%s] Pause toggle (paused=%d)", KeyName(base.pauseKey).c_str(), *g_paused);
+        }
+        if (g_paused && KeyPressed(base.stepKey, &stepDown)) {
+            if (*g_paused) QueuePress(kStepFrame);  // the game only steps while paused
+        }
+        if (g_timeScaleStep) {
+            static const float kLadder[] = {0.01f, 0.05f, 0.1f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f};
+            const float cur = *g_timeScale;
+            if (KeyPressed(base.slowerKey, &slowerDown)) {
+                float next = kLadder[0];
+                for (float s : kLadder)
+                    if (s < cur - 0.001f) next = s;
+                SetTimeScale(next);
+                Log("[%s] Game speed %.2fx", KeyName(base.slowerKey).c_str(), next);
+            }
+            if (KeyPressed(base.fasterKey, &fasterDown)) {
+                float next = kLadder[7];
+                for (int i = 7; i >= 0; --i)
+                    if (kLadder[i] > cur + 0.001f) next = kLadder[i];
+                SetTimeScale(next);
+                Log("[%s] Game speed %.2fx", KeyName(base.fasterKey).c_str(), next);
+            }
+            if (KeyPressed(base.normalSpeedKey, &normalDown)) {
+                SetTimeScale(1.0f);
+                Log("[%s] Game speed 1x", KeyName(base.normalSpeedKey).c_str());
+            }
+        }
+        if (g_paused) {
+            // PageUp/PageDown: +-1 minute of game clock (hold to keep going);
+            // with Shift: +-1 hour.
+            const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+            auto timeKey = [&](int vk, bool* down, ULONGLONG* next, bool forward) {
+                bool pressed = KeyPressed(vk, down);
+                bool repeat = *down && GameHasFocus() && GetTickCount64() >= *next;
+                if (!pressed && !repeat) return;
+                *next = GetTickCount64() + (pressed ? 400 : 120);
+                if (shift) {
+                    if (forward) QueuePress(kTimeForwardHour);
+                    else QueuePress(kTimeBackward, 60);  // no TIME_BACKWARDFAST handler
+                } else {
+                    QueuePress(forward ? kTimeForward : kTimeBackward);
+                }
+                if (pressed) Log("[%s] Time of day %s1 %s", KeyName(vk).c_str(), forward ? "+" : "-", shift ? "hour" : "minute");
+            };
+            timeKey(base.timeForwardKey, &timeFwdDown, &timeFwdNext, true);
+            timeKey(base.timeBackwardKey, &timeBackDown, &timeBackNext, false);
+        }
+
         if (g_cameraMode && *g_cameraMode != lastCamMode) {
             static const char* kModes[] = {"player", "free camera", "free camera (frozen, Alan controllable)",
                                            "vehicle", "cameraman", "cameraman", "free camera", "cinematic"};
@@ -1738,6 +1883,39 @@ extern "C" int __cdecl AWT_SaveStartupPresets(void) {
     return 1;
 }
 
+extern "C" int __cdecl AWT_GetPhoto(AwtPhoto* out) {
+    if (!out) return 0;
+    memset(out, 0, sizeof(*out));
+    out->freeCamAvailable = g_cameraMode != nullptr && g_isPressedTrampoline != nullptr;
+    out->photoAvailable = g_paused != nullptr && g_timeScaleStep != nullptr && g_isPressedTrampoline != nullptr;
+    out->cameraMode = g_cameraMode ? *g_cameraMode : 0;
+    out->paused = g_paused ? *g_paused : 0;
+    out->timeScale = g_timeScale ? *g_timeScale : 1.0f;
+    snprintf(out->keys, sizeof(out->keys), "%s", g_photoKeys);
+    return 1;
+}
+
+extern "C" int __cdecl AWT_PhotoAction(int action) {
+    if (!g_isPressedTrampoline) return 0;
+    switch (action) {
+        case AWT_PHOTO_FREECAM: if (!g_cameraMode) return 0; QueuePress(kToggleFreeCamera); break;
+        case AWT_PHOTO_PAUSE: if (!g_paused) return 0; QueuePress(kPause); break;
+        case AWT_PHOTO_STEP: if (!g_paused || !*g_paused) return 0; QueuePress(kStepFrame); break;
+        case AWT_PHOTO_TIME_MINUS_HOUR: QueuePress(kTimeBackward, 60); break;
+        case AWT_PHOTO_TIME_MINUS_MINUTE: QueuePress(kTimeBackward); break;
+        case AWT_PHOTO_TIME_PLUS_MINUTE: QueuePress(kTimeForward); break;
+        case AWT_PHOTO_TIME_PLUS_HOUR: QueuePress(kTimeForwardHour); break;
+        default: return 0;
+    }
+    return 1;
+}
+
+extern "C" int __cdecl AWT_SetTimeScale(float scale) {
+    if (!g_timeScaleStep) return 0;
+    SetTimeScale(scale);
+    return 1;
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(inst);
@@ -1760,14 +1938,17 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
             scale = 2;
         }
         if (PatchAtlasSize((int)scale)) g_atlasScale = (int)scale;
-        // Before the game's own code runs, so no thread can be inside getAxis.
-        wchar_t fc[16] = {};
-        GetPrivateProfileStringW(L"FreeCamera", L"Enabled", L"false", fc, 16, (g_dir + L"awtweaks.ini").c_str());
-        if (!_wcsnicmp(fc, L"true", 4) || !_wcsnicmp(fc, L"1", 1) || !_wcsnicmp(fc, L"on", 2) ||
-            !_wcsnicmp(fc, L"yes", 3)) {
-            InstallFreeCameraHook();
-            InstallTogglePressHook();
-        }
+        // Before the game's own code runs, so no thread can be inside getAxis/isPressed.
+        auto iniBool = [&](const wchar_t* section) {
+            wchar_t v[16] = {};
+            GetPrivateProfileStringW(section, L"Enabled", L"false", v, 16, (g_dir + L"awtweaks.ini").c_str());
+            return !_wcsnicmp(v, L"true", 4) || !_wcsnicmp(v, L"1", 1) || !_wcsnicmp(v, L"on", 2) ||
+                   !_wcsnicmp(v, L"yes", 3);
+        };
+        const bool freeCam = iniBool(L"FreeCamera"), photo = iniBool(L"PhotoMode");
+        if (freeCam) InstallFreeCameraHook();
+        if (freeCam || photo) InstallTogglePressHook();
+        if (photo) LocatePhotoState();
         if (HANDLE h = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr)) CloseHandle(h);
     }
     return TRUE;
