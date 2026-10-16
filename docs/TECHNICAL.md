@@ -208,6 +208,22 @@ shader_compare.exe bin\shaders\test_vs.dxil <original_ps.dxil> bin\shaders\Sb12S
 The original blobs come from the game's `ShadowBuffer.shaderbin` and aren't in
 the repository.
 
+### Ambient occlusion shader replacement (`[Shaders] AOShader`)
+`HBAO.shaderbin` is NVIDIA HBAO+: deinterleave depth into 16 quarter-res
+layers, reconstruct normals, `coarseAOPS` per layer, reinterleave, blur, copy.
+`coarseAOPS` comes in 4, 6 and 8 directions (4 steps each; the first step of
+each direction is the small-scale term, the rest large-scale), with the
+background/foreground radius clamps and the depth-threshold fade. Output
+x = AO, y = view depth for the blur. In game (Ultra) only the 6-direction
+variant is created.
+
+`src/shaders/hbao_coarse.hlsl` rebuilds all three (`NUM_DIRECTIONS`), plus a
+`DEBUG_STRIPES` pattern (full occlusion in 32-px stripes: 8 px per layer, so
+they survive reinterleaving). `shader_compare --hbao` feeds RGBA normals,
+quarter-res view depth, two plain samplers and HBAO+ constants: all three
+match the originals bit for bit. The add-on's replacement code handles both
+shader families, each with its own `[Shaders]` key and stats.
+
 ### Hotkeys and presets
 `ToggleKey` (F10) A/B-toggles every override and `LightShadowScale` back to
 stock; `PresetKey` (F9) cycles `[Preset:Name]` sections, which apply on top of

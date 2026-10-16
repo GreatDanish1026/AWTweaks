@@ -3,7 +3,9 @@
 // D3D12 WARP (software, deterministic) with identical synthetic inputs - linear depth,
 // a shadow map, the $Globals constants - and compares every output pixel.
 //
-// Usage: shader_compare.exe <vs.dxil> <original_ps.dxil> <replacement_ps.dxil> [seeds] [settings]
+// Usage: shader_compare.exe [--hbao] <vs.dxil> <original_ps.dxil> <replacement_ps.dxil> [seeds] [settings]
+// --hbao: the inputs of HBAO.rfx coarseAOPS instead of ShadowBuffer (t0 RGBA normals,
+// t1 quarter-res view depth, two ordinary samplers, HBAO+ constants).
 // Exit code 0 = all seeds within tolerance.
 // With [settings] (the AWTweaks settings code the enhanced shader decodes from
 // g_fCascadePCFSize_d3t: 1 + sun * 100 + contact) the outputs are expected to differ: it checks the replacement for
@@ -46,6 +48,7 @@ static std::vector<uint8_t> ReadFile(const char* path) {
 }
 
 constexpr UINT kW = 256, kH = 256, kShadowRes = 512;
+static bool g_hbao = false;
 
 struct Gpu {
     ID3D12Device* dev = nullptr;
@@ -114,18 +117,21 @@ struct Gpu {
                                              __uuidof(ID3D12Resource), (void**)&r));
         return r;
     }
-    // Uploads float data into a R32_FLOAT texture (COPY_DEST -> PIXEL_SHADER_RESOURCE).
-    void UploadR32(ID3D12Resource* tex, UINT w, UINT h, const std::vector<float>& data) {
-        UINT64 pitch = (w * 4 + 255) & ~255ull;
+    // Uploads float data into a R32_FLOAT (or, channels 4, R32G32B32A32_FLOAT) texture
+    // (COPY_DEST -> PIXEL_SHADER_RESOURCE).
+    void UploadR32(ID3D12Resource* tex, UINT w, UINT h, const std::vector<float>& data, UINT channels = 1) {
+        const UINT rowBytes = w * 4 * channels;
+        UINT64 pitch = (rowBytes + 255) & ~255ull;
         ID3D12Resource* up = Buffer(pitch * h, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
         uint8_t* p = nullptr;
         CHECKHR(up->Map(0, nullptr, (void**)&p));
-        for (UINT y = 0; y < h; ++y) memcpy(p + y * pitch, &data[y * w], w * 4);
+        for (UINT y = 0; y < h; ++y) memcpy(p + y * pitch, &data[y * w * channels], rowBytes);
         up->Unmap(0, nullptr);
         Begin();
         D3D12_TEXTURE_COPY_LOCATION dst = {tex, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
         D3D12_TEXTURE_COPY_LOCATION src = {up, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
-        src.PlacedFootprint.Footprint = {DXGI_FORMAT_R32_FLOAT, w, h, 1, (UINT)pitch};
+        src.PlacedFootprint.Footprint = {channels == 4 ? DXGI_FORMAT_R32G32B32A32_FLOAT : DXGI_FORMAT_R32_FLOAT,
+                                         w, h, 1, (UINT)pitch};
         list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
         D3D12_RESOURCE_BARRIER b = {};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -153,8 +159,12 @@ static ID3D12RootSignature* MakeRootSignature(ID3D12Device* dev) {
     s[0].ShaderRegister = 0;
     s[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     s[1] = s[0];
-    s[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
-    s[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    if (!g_hbao) {
+        s[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+        s[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    } else {
+        s[1].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;  // quarter-res depth is point-sampled
+    }
     s[1].ShaderRegister = 1;
     D3D12_ROOT_SIGNATURE_DESC rs = {2, params, 2, s, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT};
     ID3DBlob* blob = nullptr;
@@ -214,7 +224,47 @@ static std::vector<uint8_t> MakeConstants(std::mt19937& rng) {
     return cb;
 }
 
+// HBAO+ constants for a 1024x1024 full-res view (256x256 per deinterleaved layer),
+// 90 degree FOV, AO radius 0.5..2.5 m; the optional clamps and depth fade on or off.
+static std::vector<uint8_t> MakeConstantsHBAO(std::mt19937& rng) {
+    std::vector<uint8_t> cb(1024, 0);  // 656 used
+    auto f = [&](size_t off, float v) { memcpy(&cb[off], &v, 4); };
+    std::uniform_real_distribution<float> u(0.0f, 1.0f);
+    const float tanHalf = 0.9f + 0.2f * u(rng);
+    f(424, 1024.0f);  // g_vRenderRes
+    f(428, 1024.0f);
+    f(512, 2.0f * tanHalf);  // UVToViewAB
+    f(516, -2.0f * tanHalf);
+    f(520, -tanHalf);
+    f(524, tanHalf);
+    f(544, 1.0f / kW);  // quarter-res texel size
+    f(548, 1.0f / kH);
+    const bool fade = u(rng) < 0.5f;
+    f(552, fade ? -1.0f / (20.0f + 40.0f * u(rng)) : 0.0f);
+    f(556, fade ? 1.0f + 3.0f * u(rng) : -1.0f);
+    const float radius = 0.5f + 2.0f * u(rng);
+    f(560, -1.0f / (radius * radius));
+    f(564, radius * 0.5f * 1024.0f / tanHalf);  // radius to screen pixels at depth 1
+    f(568, u(rng) < 0.5f ? -1.0f : 4.0f + 8.0f * u(rng));     // background clamp
+    f(572, u(rng) < 0.5f ? -1.0f : 60.0f + 100.0f * u(rng));  // foreground clamp
+    f(576, 0.1f * u(rng));       // N.V bias
+    f(580, 0.5f + 1.5f * u(rng)); // small scale
+    f(584, 0.5f + 2.0f * u(rng)); // large scale
+    f(624, (float)(rng() % 4));   // PerPassOffset
+    f(628, (float)(rng() % 4));
+    const float a = 6.2831853f * u(rng);
+    f(640, std::cos(a));  // PerPassJitter
+    f(644, std::sin(a));
+    f(648, u(rng));
+    return cb;
+}
+
 int main(int argc, char** argv) {
+    if (argc > 1 && !strcmp(argv[1], "--hbao")) {
+        g_hbao = true;
+        --argc;
+        ++argv;
+    }
     if (argc < 4) {
         fprintf(stderr, "usage: %s vs.dxil original_ps.dxil replacement_ps.dxil [seeds]\n", argv[0]);
         return 2;
@@ -230,9 +280,12 @@ int main(int argc, char** argv) {
     ID3D12PipelineState* psoA = MakePso(g.dev, root, vs, psA);
     ID3D12PipelineState* psoB = MakePso(g.dev, root, vs, psB);
 
-    ID3D12Resource* depthTex = g.Texture(kW, kH, DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_NONE,
+    // t0, t1: linear depth + shadow map, or (--hbao) normals + quarter-res view depth.
+    const DXGI_FORMAT tex0Format = g_hbao ? DXGI_FORMAT_R32G32B32A32_FLOAT : DXGI_FORMAT_R32_FLOAT;
+    const UINT tex1Res = g_hbao ? kW : kShadowRes;
+    ID3D12Resource* depthTex = g.Texture(kW, kH, tex0Format, D3D12_RESOURCE_FLAG_NONE,
                                          D3D12_RESOURCE_STATE_COPY_DEST);
-    ID3D12Resource* shadowTex = g.Texture(kShadowRes, kShadowRes, DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_NONE,
+    ID3D12Resource* shadowTex = g.Texture(tex1Res, tex1Res, DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_NONE,
                                           D3D12_RESOURCE_STATE_COPY_DEST);
     ID3D12Resource* rt = g.Texture(kW, kH, DXGI_FORMAT_R32G32B32A32_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
                                    D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -251,8 +304,10 @@ int main(int argc, char** argv) {
     sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     sv.Texture2D.MipLevels = 1;
     D3D12_CPU_DESCRIPTOR_HANDLE cpu = srvHeap->GetCPUDescriptorHandleForHeapStart();
+    sv.Format = tex0Format;
     g.dev->CreateShaderResourceView(depthTex, &sv, cpu);
     cpu.ptr += inc;
+    sv.Format = DXGI_FORMAT_R32_FLOAT;
     g.dev->CreateShaderResourceView(shadowTex, &sv, cpu);
 
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1};
@@ -305,15 +360,36 @@ int main(int argc, char** argv) {
             for (UINT x = 0; x < kShadowRes; ++x)
                 shadow[y * kShadowRes + x] =
                     0.3f + 0.4f * std::sin(x * 0.07f + seed) * std::cos(y * 0.05f) + 0.1f * u(rng);
-        g.UploadR32(depthTex, kW, kH, depth);
-        g.UploadR32(shadowTex, kShadowRes, kShadowRes, shadow);
+        if (g_hbao) {
+            // View depth: rolling ground 3..9 m with raised blocks and noise; normals
+            // facing the camera, encoded * 0.5 + 0.5.
+            std::vector<float> normals(kW * kH * 4), viewDepth(kW * kH);
+            for (UINT y = 0; y < kH; ++y)
+                for (UINT x = 0; x < kW; ++x) {
+                    float z = 6.0f + 3.0f * std::sin(x * 0.05f + seed) * std::cos(y * 0.04f);
+                    if (((x / 24) + (y / 24) + seed) % 3 == 0) z -= 1.0f + 0.5f * u(rng);
+                    viewDepth[y * kW + x] = z + 0.02f * u(rng);
+                    float nx = u(rng) * 2 - 1, ny = u(rng) * 2 - 1, nz = -(0.3f + u(rng));
+                    float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+                    float* n = &normals[(y * kW + x) * 4];
+                    n[0] = nx / len * 0.5f + 0.5f;
+                    n[1] = ny / len * 0.5f + 0.5f;
+                    n[2] = nz / len * 0.5f + 0.5f;
+                    n[3] = 1.0f;
+                }
+            g.UploadR32(depthTex, kW, kH, normals, 4);
+            g.UploadR32(shadowTex, kW, kH, viewDepth);
+        } else {
+            g.UploadR32(depthTex, kW, kH, depth);
+            g.UploadR32(shadowTex, kShadowRes, kShadowRes, shadow);
+        }
         D3D12_RESOURCE_BARRIER back[2] = {};
         for (int i = 0; i < 2; ++i) {
             back[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
             back[i].Transition = {i ? shadowTex : depthTex, 0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                                   D3D12_RESOURCE_STATE_COPY_DEST};
         }
-        auto cb = MakeConstants(rng);
+        auto cb = g_hbao ? MakeConstantsHBAO(rng) : MakeConstants(rng);
         if (enhanced) {  // g_fCascadePCFSize_d3t rounded to 0.1, plus code * 0.00001
             float size;
             memcpy(&size, &cb[496], 4);

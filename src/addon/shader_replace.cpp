@@ -1,9 +1,11 @@
-// Replaces the game's screen-space sun/moon shadow shaders (ShadowBuffer.rfx,
-// "update_shadow_buffer_PS") with our own from src/shaders/shadow_buffer.hlsl: rebuilt bit-identical, plus
-// optional soft and contact shadows the main DLL switches on (see the .hlsl).
+// Replaces game shaders with AWTweaks' own, in families:
+//  - shadow: ShadowBuffer.rfx "update_shadow_buffer_PS" (the screen-space sun/moon shadow
+//    mask), from src/shaders/shadow_buffer.hlsl: rebuilt bit-identical, plus optional soft
+//    and contact shadows the main DLL switches on (see the .hlsl);
+//  - AO: HBAO.rfx "coarseAOPS" (NVIDIA HBAO+), from src/shaders/hbao_coarse.hlsl.
 // ReShade reports every pipeline the game creates; when its pixel shader is one of the
-// four originals (matched by the DXBC container digest and size) we swap in ours.
-// Mode comes from awtweaks.ini [Shaders] ShadowShader, read at game start.
+// originals (matched by the DXBC container digest and size) we swap in ours.
+// Each family's mode comes from awtweaks.ini [Shaders], read at game start.
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -15,6 +17,7 @@
 #include <cstring>
 #include <string>
 
+#include "../shaders/hbao_blobs.h"
 #include "../shaders/shadow_buffer_blobs.h"
 #include "shader_replace.h"
 
@@ -33,8 +36,8 @@ struct Variant {
     size_t debugSize;
 };
 
-// Hashes from ShadowBuffer.shaderbin of game build 34885.
-const Variant kVariants[] = {
+// Hashes from the shaderbins of game build 34885.
+const Variant kShadowVariants[] = {
     {"12-tap fade-out",
      {0x1e, 0xc7, 0xe0, 0xb7, 0xad, 0x2f, 0xb6, 0x83, 0xe0, 0xcc, 0x77, 0x3b, 0x7c, 0x14, 0x3c, 0xd4},
      7091, kSb12End, sizeof(kSb12End), kSb12EndDebug, sizeof(kSb12EndDebug)},
@@ -48,12 +51,36 @@ const Variant kVariants[] = {
      {0x08, 0x5a, 0x11, 0x97, 0xb0, 0xb4, 0x4e, 0x7f, 0x9f, 0xb9, 0x8b, 0x58, 0xaf, 0xdb, 0x04, 0xdb},
      6751, kSb10Start, sizeof(kSb10Start), kSb10StartDebug, sizeof(kSb10StartDebug)},
 };
-constexpr int kNumVariants = sizeof(kVariants) / sizeof(kVariants[0]);
 
-Mode g_mode = Mode::Original;
-std::atomic<int> g_replaced{0};
-std::atomic<int> g_missed{0};
-std::atomic<unsigned> g_variantsSeen{0};  // bit per variant
+const Variant kAoVariants[] = {
+    {"4 directions",
+     {0xbd, 0xad, 0x6c, 0xe9, 0xd2, 0x3c, 0xbb, 0xf7, 0x7e, 0xa8, 0xf3, 0x30, 0x46, 0xb8, 0x39, 0x90},
+     12087, kAoDir4, sizeof(kAoDir4), kAoDir4Debug, sizeof(kAoDir4Debug)},
+    {"6 directions",
+     {0xa3, 0xc0, 0x9c, 0x93, 0x61, 0xf3, 0x02, 0x40, 0x8a, 0xe6, 0x48, 0x1b, 0xd9, 0x36, 0x72, 0xda},
+     15315, kAoDir6, sizeof(kAoDir6), kAoDir6Debug, sizeof(kAoDir6Debug)},
+    {"8 directions",
+     {0x24, 0x1c, 0x9f, 0xf7, 0x02, 0xe0, 0x9e, 0x0c, 0x7c, 0x00, 0x9d, 0xe8, 0x8c, 0x8c, 0x90, 0x67},
+     18527, kAoDir8, sizeof(kAoDir8), kAoDir8Debug, sizeof(kAoDir8Debug)},
+};
+
+struct FamilyState {
+    const char* label;      // for the log
+    const wchar_t* iniKey;  // [Shaders] key
+    const Variant* variants;
+    int count;
+    Mode mode = Mode::Original;
+    std::atomic<int> replaced{0};
+    std::atomic<int> missed{0};
+    std::atomic<unsigned> seen{0};  // bit per variant
+};
+
+FamilyState g_families[] = {
+    {"shadow", L"ShadowShader", kShadowVariants, sizeof(kShadowVariants) / sizeof(Variant)},
+    {"AO", L"AOShader", kAoVariants, sizeof(kAoVariants) / sizeof(Variant)},
+};
+constexpr int kNumFamilies = sizeof(g_families) / sizeof(g_families[0]);
+bool g_registered = false;
 
 void Log(reshade::log::level level, const char* fmt, ...) {
     char buf[512];
@@ -64,15 +91,23 @@ void Log(reshade::log::level level, const char* fmt, ...) {
     reshade::log::message(level, buf);
 }
 
-int Find(const void* code, size_t size) {
-    if (!code || size < 20 || memcmp(code, "DXBC", 4) != 0) return -1;
+// Which family and variant a shader blob is, or false.
+bool Find(const void* code, size_t size, int* family, int* variant) {
+    if (!code || size < 20 || memcmp(code, "DXBC", 4) != 0) return false;
     const uint8_t* digest = static_cast<const uint8_t*>(code) + 4;
-    for (int i = 0; i < kNumVariants; ++i)
-        if (size == kVariants[i].size && memcmp(digest, kVariants[i].digest, 16) == 0) return i;
-    return -1;
+    for (int f = 0; f < kNumFamilies; ++f)
+        for (int i = 0; i < g_families[f].count; ++i) {
+            const Variant& v = g_families[f].variants[i];
+            if (size == v.size && memcmp(digest, v.digest, 16) == 0) {
+                *family = f;
+                *variant = i;
+                return true;
+            }
+        }
+    return false;
 }
 
-Mode ReadMode() {
+Mode ReadMode(const wchar_t* key) {
     wchar_t path[MAX_PATH];
     DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
     if (!n || n >= MAX_PATH) return Mode::Original;
@@ -80,7 +115,7 @@ Mode ReadMode() {
     ini.resize(ini.find_last_of(L"\\/") + 1);
     ini += L"awtweaks.ini";
     wchar_t v[64] = {};
-    GetPrivateProfileStringW(L"Shaders", L"ShadowShader", L"Original", v, 64, ini.c_str());
+    GetPrivateProfileStringW(L"Shaders", key, L"Original", v, 64, ini.c_str());
     // "Rebuilt" was the name before the enhanced options existed; same shader.
     if (_wcsicmp(v, L"Enhanced") == 0 || _wcsicmp(v, L"Rebuilt") == 0) return Mode::Enhanced;
     if (_wcsicmp(v, L"Debug") == 0) return Mode::Debug;
@@ -90,21 +125,24 @@ Mode ReadMode() {
 // The shader_desc lives in ReShade's copy of the game's description, so editing it
 // changes what the driver compiles. Our blobs are static, so they outlive the call.
 bool OnCreatePipeline(device* dev, pipeline_layout, uint32_t count, const pipeline_subobject* subobjects) {
-    if (g_mode == Mode::Original || dev->get_api() != device_api::d3d12) return false;
+    if (dev->get_api() != device_api::d3d12) return false;
     bool changed = false;
     for (uint32_t i = 0; i < count; ++i) {
         if (subobjects[i].type != pipeline_subobject_type::pixel_shader || !subobjects[i].data) continue;
         auto* desc = static_cast<shader_desc*>(subobjects[i].data);
-        int v = Find(desc->code, desc->code_size);
-        if (v < 0) continue;
-        const Variant& var = kVariants[v];
-        desc->code = g_mode == Mode::Debug ? var.debug : var.enhanced;
-        desc->code_size = g_mode == Mode::Debug ? var.debugSize : var.enhancedSize;
+        int f, v;
+        if (!Find(desc->code, desc->code_size, &f, &v)) continue;
+        FamilyState& fam = g_families[f];
+        if (fam.mode == Mode::Original) continue;
+        const Variant& var = fam.variants[v];
+        const bool debug = fam.mode == Mode::Debug;
+        desc->code = debug ? var.debug : var.enhanced;
+        desc->code_size = debug ? var.debugSize : var.enhancedSize;
         changed = true;
-        int total = ++g_replaced;
-        if (!(g_variantsSeen.fetch_or(1u << v) & (1u << v)))
-            Log(reshade::log::level::info, "AWTweaks: replacing shadow shader '%s' (%s), pipeline #%d", var.name,
-                g_mode == Mode::Debug ? "debug stripes" : "enhanced", total);
+        int total = ++fam.replaced;
+        if (!(fam.seen.fetch_or(1u << v) & (1u << v)))
+            Log(reshade::log::level::info, "AWTweaks: replacing %s shader '%s' (%s), pipeline #%d", fam.label,
+                var.name, debug ? "debug stripes" : "enhanced", total);
     }
     return changed;
 }
@@ -112,47 +150,56 @@ bool OnCreatePipeline(device* dev, pipeline_layout, uint32_t count, const pipeli
 // A game shader still present here means a pipeline was created a way we didn't see
 // (e.g. loaded from a pipeline library), so it runs the original.
 void OnInitPipeline(device*, pipeline_layout, uint32_t count, const pipeline_subobject* subobjects, pipeline) {
-    if (g_mode == Mode::Original) return;
     for (uint32_t i = 0; i < count; ++i) {
         if (subobjects[i].type != pipeline_subobject_type::pixel_shader || !subobjects[i].data) continue;
         auto* desc = static_cast<const shader_desc*>(subobjects[i].data);
-        int v = Find(desc->code, desc->code_size);
-        if (v >= 0 && ++g_missed == 1)
-            Log(reshade::log::level::warning, "AWTweaks: shadow shader '%s' was created without replacement",
-                kVariants[v].name);
+        int f, v;
+        if (!Find(desc->code, desc->code_size, &f, &v)) continue;
+        FamilyState& fam = g_families[f];
+        if (fam.mode != Mode::Original && ++fam.missed == 1)
+            Log(reshade::log::level::warning, "AWTweaks: %s shader '%s' was created without replacement",
+                fam.label, fam.variants[v].name);
     }
 }
 
 }  // namespace
 
 void Install() {
-    g_mode = ReadMode();
-    Log(reshade::log::level::info, "AWTweaks: [Shaders] ShadowShader=%s", ModeName());
-    if (g_mode == Mode::Original) return;
+    bool any = false;
+    for (FamilyState& fam : g_families) {
+        fam.mode = ReadMode(fam.iniKey);
+        Log(reshade::log::level::info, "AWTweaks: [Shaders] %ls=%s", fam.iniKey,
+            ModeName(&fam - g_families == 0 ? Family::Shadow : Family::AO));
+        any |= fam.mode != Mode::Original;
+    }
+    if (!any) return;
     reshade::register_event<reshade::addon_event::create_pipeline>(&OnCreatePipeline);
     reshade::register_event<reshade::addon_event::init_pipeline>(&OnInitPipeline);
+    g_registered = true;
 }
 
 void Uninstall() {
-    if (g_mode == Mode::Original) return;
+    if (!g_registered) return;
     reshade::unregister_event<reshade::addon_event::create_pipeline>(&OnCreatePipeline);
     reshade::unregister_event<reshade::addon_event::init_pipeline>(&OnInitPipeline);
+    g_registered = false;
 }
 
-Stats GetStats() {
+Stats GetStats(Family family) {
+    const FamilyState& fam = g_families[(int)family];
     Stats s;
-    s.mode = g_mode;
-    s.pipelinesReplaced = g_replaced.load();
-    s.pipelinesMissed = g_missed.load();
-    unsigned seen = g_variantsSeen.load();
+    s.mode = fam.mode;
+    s.pipelinesReplaced = fam.replaced.load();
+    s.pipelinesMissed = fam.missed.load();
+    unsigned seen = fam.seen.load();
     s.variantsReplaced = 0;
-    for (int i = 0; i < kNumVariants; ++i) s.variantsReplaced += (seen >> i) & 1;
-    s.variantsTotal = kNumVariants;
+    for (int i = 0; i < fam.count; ++i) s.variantsReplaced += (seen >> i) & 1;
+    s.variantsTotal = fam.count;
     return s;
 }
 
-const char* ModeName() {
-    switch (g_mode) {
+const char* ModeName(Family family) {
+    switch (g_families[(int)family].mode) {
         case Mode::Enhanced: return "Enhanced";
         case Mode::Debug: return "Debug";
         default: return "Original";

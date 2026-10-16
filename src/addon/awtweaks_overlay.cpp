@@ -440,7 +440,7 @@ void DrawAdvanced(const AwtStatus& st, int n) {
 // Sun/moon shadow shader: soft (sun-size) and contact shadows, when [Shaders]
 // ShadowShader=Enhanced has the add-on replacing the game's shader.
 void DrawShadowFx(const AwtStatus& st) {
-    shader_replace::Stats s = shader_replace::GetStats();
+    shader_replace::Stats s = shader_replace::GetStats(shader_replace::Family::Shadow);
     ImGui::SeparatorText("Sun and moon shadows");
     if (s.mode == shader_replace::Mode::Original) {
         ImGui::TextDisabled("Soft and contact shadows: set [Shaders] ShadowShader=Enhanced in "
@@ -468,6 +468,14 @@ void DrawShadowFx(const AwtStatus& st) {
     ImGui::EndDisabled();
     ImGui::TextDisabled("%d of %d shadow shaders replaced (%d pipelines)%s", s.variantsReplaced, s.variantsTotal,
                         s.pipelinesReplaced, s.pipelinesMissed ? ", some missed - see ReShade.log" : "");
+
+    // Ambient occlusion shader: rebuilt so far, so just its status.
+    shader_replace::Stats ao = shader_replace::GetStats(shader_replace::Family::AO);
+    if (ao.mode != shader_replace::Mode::Original)
+        ImGui::TextDisabled("Ambient occlusion shader: %s, %d of %d replaced (%d pipelines)%s",
+                            shader_replace::ModeName(shader_replace::Family::AO), ao.variantsReplaced,
+                            ao.variantsTotal, ao.pipelinesReplaced,
+                            ao.pipelinesMissed ? ", some missed - see ReShade.log" : "");
 }
 
 void DrawOverlay(reshade::api::effect_runtime*) {
