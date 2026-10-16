@@ -244,10 +244,10 @@ static std::vector<uint8_t> MakeConstantsHBAO(std::mt19937& rng) {
     f(556, fade ? 1.0f + 3.0f * u(rng) : -1.0f);
     const float radius = 0.5f + 2.0f * u(rng);
     f(560, -1.0f / (radius * radius));
-    f(564, radius * 0.5f * 1024.0f / tanHalf);  // radius to screen pixels at depth 1
+    f(564, radius * 0.5f * kH / tanHalf);  // radius to quarter-res pixels at depth 1
     f(568, u(rng) < 0.5f ? -1.0f : 4.0f + 8.0f * u(rng));     // background clamp
     f(572, u(rng) < 0.5f ? -1.0f : 60.0f + 100.0f * u(rng));  // foreground clamp
-    f(576, 0.1f * u(rng));       // N.V bias
+    f(576, std::round(100.0f * u(rng)) / 1000.0f);  // N.V bias, on AWTweaks' 0.001 grid
     f(580, 0.5f + 1.5f * u(rng)); // small scale
     f(584, 0.5f + 2.0f * u(rng)); // large scale
     f(624, (float)(rng() % 4));   // PerPassOffset
@@ -260,10 +260,26 @@ static std::vector<uint8_t> MakeConstantsHBAO(std::mt19937& rng) {
 }
 
 int main(int argc, char** argv) {
+    bool flat = false;  // --hbao --flat: a flat wall facing the camera (AO must be ~1)
+    bool blocks = false;
+    bool corner = false;  // --hbao --corner: a back wall at 6 m meeting a side wall at x = -1.5 m
     if (argc > 1 && !strcmp(argv[1], "--hbao")) {
         g_hbao = true;
         --argc;
         ++argv;
+        if (argc > 1 && !strcmp(argv[1], "--flat")) {
+            flat = true;
+            --argc;
+            ++argv;
+        } else if (argc > 1 && !strcmp(argv[1], "--blocks")) {  // the wall with 1 m blocks on it
+            flat = blocks = true;
+            --argc;
+            ++argv;
+        } else if (argc > 1 && !strcmp(argv[1], "--corner")) {
+            flat = corner = true;
+            --argc;
+            ++argv;
+        }
     }
     if (argc < 4) {
         fprintf(stderr, "usage: %s vs.dxil original_ps.dxil replacement_ps.dxil [seeds]\n", argv[0]);
@@ -360,6 +376,8 @@ int main(int argc, char** argv) {
             for (UINT x = 0; x < kShadowRes; ++x)
                 shadow[y * kShadowRes + x] =
                     0.3f + 0.4f * std::sin(x * 0.07f + seed) * std::cos(y * 0.05f) + 0.1f * u(rng);
+        std::mt19937 cbRng(seed * 7919);
+        auto cornerCb = MakeConstantsHBAO(cbRng);
         if (g_hbao) {
             // View depth: rolling ground 3..9 m with raised blocks and noise; normals
             // facing the camera, encoded * 0.5 + 0.5.
@@ -368,8 +386,18 @@ int main(int argc, char** argv) {
                 for (UINT x = 0; x < kW; ++x) {
                     float z = 6.0f + 3.0f * std::sin(x * 0.05f + seed) * std::cos(y * 0.04f);
                     if (((x / 24) + (y / 24) + seed) % 3 == 0) z -= 1.0f + 0.5f * u(rng);
-                    viewDepth[y * kW + x] = z + 0.02f * u(rng);
+                    viewDepth[y * kW + x] = blocks ? ((x / 32 + y / 32) % 2 ? 5.7f : 6.0f) : flat ? 6.0f
+                                                                                            : z + 0.02f * u(rng);
                     float nx = u(rng) * 2 - 1, ny = u(rng) * 2 - 1, nz = -(0.3f + u(rng));
+                    if (flat) nx = ny = 0.0f, nz = -1.0f;
+                    if (corner) {  // inside corner: whichever wall is nearer along the view ray
+                        float tanHalf;
+                        memcpy(&tanHalf, &cornerCb[524], 4);
+                        float dx = (2.0f * (x + 0.5f) / kW - 1.0f) * tanHalf;
+                        float zSide = dx < 0.0f ? -1.5f / dx : 1e9f;
+                        viewDepth[y * kW + x] = std::min(6.0f, zSide);
+                        if (zSide < 6.0f) nx = 1.0f, nz = 0.0f;
+                    }
                     float len = std::sqrt(nx * nx + ny * ny + nz * nz);
                     float* n = &normals[(y * kW + x) * 4];
                     n[0] = nx / len * 0.5f + 0.5f;
@@ -389,8 +417,13 @@ int main(int argc, char** argv) {
             back[i].Transition = {i ? shadowTex : depthTex, 0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                                   D3D12_RESOURCE_STATE_COPY_DEST};
         }
-        auto cb = g_hbao ? MakeConstantsHBAO(rng) : MakeConstants(rng);
-        if (enhanced) {  // g_fCascadePCFSize_d3t rounded to 0.1, plus code * 0.00001
+        auto cb = corner ? cornerCb : g_hbao ? MakeConstantsHBAO(rng) : MakeConstants(rng);
+        if (enhanced && g_hbao) {  // HBAO bias (on the 0.001 grid) plus code * 0.000001
+            float bias;
+            memcpy(&bias, &cb[576], 4);
+            bias = (float)(bias + settings * 0.000001);
+            memcpy(&cb[576], &bias, 4);
+        } else if (enhanced) {  // g_fCascadePCFSize_d3t rounded to 0.1, plus code * 0.00001
             float size;
             memcpy(&size, &cb[496], 4);
             size = (float)(std::floor(size * 10.0 + 0.5) / 10.0 + settings * 0.00001);
@@ -429,6 +462,26 @@ int main(int argc, char** argv) {
                 meanB += x;
             }
             failures += bad != 0;
+            if (corner) {  // occlusion (1 - AO) where the original darkens, original vs enhanced
+                double occA = 0, occB = 0;
+                size_t m = 0;
+                for (size_t i = 0; i < a.size(); i += 4)
+                    if (a[i] < 0.98f) occA += 1 - a[i], occB += 1 - b[i], ++m;
+                float r, sm, lg;
+                memcpy(&r, &cb[560], 4);
+                memcpy(&sm, &cb[580], 4);
+                memcpy(&lg, &cb[584], 4);
+                printf("seed %d: radius %.2f m, scales %.2f/%.2f: creased %zu px, occlusion original %.3f,"
+                       " enhanced %.3f (ratio %.2f)\n",
+                       seed, std::sqrt(-1.0f / r), sm, lg, m, occA / m, occB / m, occB / occA);
+                if (seed == 1) {
+                    const size_t row = kH / 2 * kW;
+                    for (UINT x = 0; x < kW; x += 8)
+                        if (a[(row + x) * 4] < 0.99f || b[(row + x) * 4] < 0.99f)
+                            printf("  x %4u: original %.3f enhanced %.3f\n", x, a[(row + x) * 4],
+                                   b[(row + x) * 4]);
+                }
+            }
             printf("seed %d: %s  shadow mean original %.3f, enhanced %.3f, changed %zu px, invalid %zu px\n",
                    seed, bad ? "BAD " : "OK  ", mean[0] / n, meanB / n, diffPixels, bad);
             if (seed == 1) {

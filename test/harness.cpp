@@ -659,6 +659,30 @@ int wmain(int argc, wchar_t** argv) {
         Sleep(200);
         CHECK(F(7)[0] == 13.0f);
         reset(nullptr);
+
+        // v7: GTAO strength rides in the 1e-6 digits of HBAO:Bias, on its 0.001 grid.
+        WriteIni(dir + L"\\awtweaks.ini",
+                 "[Settings]\nPollMs=20\n[Tweaks]\nHBAO:Bias=0.1234\nAWTweaks:GTAO=1.5\n");
+        Sleep(300);
+        CHECK(close(F(3)[0], 0.123015));  // 0.123 + 15 * 0.000001
+        status(&st);
+        CHECK(st.gtao == 1.5f && st.aoFxSource == AWT_SRC_TWEAKS);
+        float gtao = 1.0f;
+        CHECK(set("AWTweaks:GTAO", &gtao) == 1);
+        Sleep(200);
+        CHECK(close(F(3)[0], 0.12301));
+        setModOn(0);
+        Sleep(200);
+        CHECK(F(3)[0] == 0.1f);  // F10: the engine's value
+        setModOn(1);
+        reset(nullptr);
+        WriteIni(dir + L"\\awtweaks.ini", "[Settings]\nPollMs=20\n[Tweaks]\nHBAO:Bias=0.1234\nAWTweaks:GTAO=true\n");
+        Sleep(300);
+        CHECK(close(F(3)[0], 0.12301));  // true = strength 1
+        WriteIni(dir + L"\\awtweaks.ini", "[Settings]\nPollMs=20\n[Tweaks]\nHBAO:Bias=0.1234\n");
+        Sleep(300);
+        CHECK(close(F(3)[0], 0.123));  // off: just rounded to the grid
+
         WriteIni(dir + L"\\awtweaks.ini",
                  "[Settings]\nClampToRange=true\nPollMs=20\n[Tweaks]\nHBAO:Bias=5\n"
                  "Shadows:Ultra Cascade 4 Cull Radius=0.45\n");

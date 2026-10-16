@@ -469,13 +469,31 @@ void DrawShadowFx(const AwtStatus& st) {
     ImGui::TextDisabled("%d of %d shadow shaders replaced (%d pipelines)%s", s.variantsReplaced, s.variantsTotal,
                         s.pipelinesReplaced, s.pipelinesMissed ? ", some missed - see ReShade.log" : "");
 
-    // Ambient occlusion shader: rebuilt so far, so just its status.
-    shader_replace::Stats ao = shader_replace::GetStats(shader_replace::Family::AO);
-    if (ao.mode != shader_replace::Mode::Original)
-        ImGui::TextDisabled("Ambient occlusion shader: %s, %d of %d replaced (%d pipelines)%s",
-                            shader_replace::ModeName(shader_replace::Family::AO), ao.variantsReplaced,
-                            ao.variantsTotal, ao.pipelinesReplaced,
-                            ao.pipelinesMissed ? ", some missed - see ReShade.log" : "");
+}
+
+// Ambient occlusion: GTAO in place of the game's HBAO+, when [Shaders] AOShader=Enhanced.
+void DrawAoFx(const AwtStatus& st) {
+    shader_replace::Stats s = shader_replace::GetStats(shader_replace::Family::AO);
+    ImGui::SeparatorText("Ambient occlusion");
+    if (s.mode == shader_replace::Mode::Original) {
+        ImGui::TextDisabled("GTAO: set [Shaders] AOShader=Enhanced in awtweaks.ini and restart the game.");
+        return;
+    }
+    if (s.mode == shader_replace::Mode::Debug)
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Debug test pattern on ([Shaders] AOShader=Debug)");
+    ImGui::BeginDisabled(st.modOff);
+    float gtao = st.gtao;
+    ImGui::SetNextItemWidth(AvailWidth() * 0.6f);
+    if (ImGui::SliderFloat("GTAO", &gtao, 0.0f, 3.0f, gtao >= 0.05f ? "strength %.1f" : "off (game's HBAO+)",
+                           ImGuiSliderFlags_None))
+        g_api.set("AWTweaks:GTAO", &gtao);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Ground-truth ambient occlusion: darkens creases and contact points the way\n"
+                          "they really are, without HBAO+'s grey wash on open surfaces or halos\n"
+                          "behind thin objects. 1 matches HBAO+'s darkest shading.");
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("%d of %d AO shaders replaced (%d pipelines)%s", s.variantsReplaced, s.variantsTotal,
+                        s.pipelinesReplaced, s.pipelinesMissed ? ", some missed - see ReShade.log" : "");
 }
 
 void DrawOverlay(reshade::api::effect_runtime*) {
@@ -502,6 +520,8 @@ void DrawOverlay(reshade::api::effect_runtime*) {
     DrawPhoto();
     ImGui::Spacing();
     DrawShadowFx(st);
+    ImGui::Spacing();
+    DrawAoFx(st);
     ImGui::Spacing();
     DrawAdvanced(st, n);
 }

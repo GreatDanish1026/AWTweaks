@@ -1120,6 +1120,8 @@ std::unordered_map<std::string, int> g_iniSourceOf;         // same, ignoring ov
 std::unordered_map<std::string, std::string> g_presetOf;    // name -> preset that sets it (winning one)
 std::vector<std::string> g_activePresets;
 float g_sunSize = 0.0f, g_contactShadows = 0.0f;  // effective shadow-shader settings
+float g_gtao = 0.0f;                               // effective AO-shader setting
+int g_aoFxSource = 0;
 int g_shadowFxSource = kSrcNone;
 Config g_baseShared;  // last loaded ini, for preset metadata (names/groups/descriptions)
 bool g_modOff = false;
@@ -1202,6 +1204,62 @@ bool IsShadowFxName(const std::string& name) {
     return Lower(name) == Lower(kSunSizeName) || Lower(name) == Lower(kContactShadowsName);
 }
 
+// Same for the AO shader ([Shaders] AOShader=Enhanced): "AWTweaks:GTAO" (strength 0 = off
+// .. 3) rides in "HBAO:Bias", which only the AO pass reads: bias rounded to 0.001 +
+// code * 0.000001, code = strength in 0.1 steps.
+const char* const kGtaoName = "AWTweaks:GTAO";
+const char* const kAoCarrierName = "HBAO:Bias";
+float g_stockAoBias = 0.1f;  // the engine's value, noted when it registers
+
+bool IsAoFxName(const std::string& name) { return Lower(name) == Lower(kGtaoName); }
+
+// Every AWTweaks-only setting: never an engine tweakable, packed on re-derive.
+const char* PseudoName(const std::string& name) {
+    if (Lower(name) == Lower(kSunSizeName)) return kSunSizeName;
+    if (Lower(name) == Lower(kContactShadowsName)) return kContactShadowsName;
+    if (IsAoFxName(name)) return kGtaoName;
+    return nullptr;
+}
+
+float RoundAoBias(float v) { return (float)(std::floor(v * 1000.0 + 0.5) / 1000.0); }
+
+float PackAoFx(float bias, float gtaoStrength) {
+    double b = std::floor(std::clamp(bias, 0.0f, 1.0f) * 1000.0 + 0.5) / 1000.0;
+    int code = (int)std::lround(std::clamp(gtaoStrength, 0.0f, 3.0f) * 10.0f);
+    return (float)(b + code * 0.000001);
+}
+
+// Moves "AWTweaks:GTAO" out of cfg into the "HBAO:Bias" override. Lock held.
+void DeriveAoFx(Config& cfg) {
+    g_gtao = 0.0f;
+    g_aoFxSource = 0;
+    auto biased = cfg.tweaks.find(kAoCarrierName);
+    if (biased != cfg.tweaks.end() && biased->second.count) biased->second.f[0] = RoundAoBias(biased->second.f[0]);
+    for (auto it = cfg.tweaks.begin(); it != cfg.tweaks.end();) {
+        if (!IsAoFxName(it->first)) {
+            ++it;
+            continue;
+        }
+        const Override& o = it->second;
+        g_gtao = o.isBool ? (o.b ? 1.0f : 0.0f) : (o.count ? std::clamp(o.f[0], 0.0f, 3.0f) : 0.0f);
+        g_aoFxSource = (std::max)(g_aoFxSource, g_sourceOf[it->first]);
+        it = cfg.tweaks.erase(it);
+    }
+    if (g_gtao < 0.05f) return;  // rounds to code 0
+    float bias = g_stockAoBias;
+    auto set = cfg.tweaks.find(kAoCarrierName);
+    if (set != cfg.tweaks.end() && set->second.count) bias = set->second.f[0];
+    Override o;
+    o.f[0] = PackAoFx(bias, g_gtao);
+    o.count = 1;
+    o.noClamp = true;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.6f", o.f[0]);
+    o.raw = buf;
+    cfg.tweaks[kAoCarrierName] = o;
+    if (g_sourceOf[kAoCarrierName] < g_aoFxSource) g_sourceOf[kAoCarrierName] = g_aoFxSource;
+}
+
 // Filter size rounded to 0.1, plus 0.00001 * (1 + sun size in 0.1 degree steps * 100
 // + contact length in 2 cm steps); see src/shaders/shadow_buffer.hlsl DecodeSettings.
 float PackShadowFx(float filterSize, float sunDegrees, float contactMetres) {
@@ -1270,6 +1328,7 @@ Config Derive(const Config& base) {
         g_sourceOf[name] = kSrcOverlay;
     }
     DeriveShadowFx(cfg);
+    DeriveAoFx(cfg);
     for (auto& [name, o] : cfg.tweaks)
         if (IsCascadeResolution(name) && o.count) o.f[0] = SafeCascadeResolution(name, o.f[0]);
     if (g_modOff) cfg.enabled = false;
@@ -1745,6 +1804,7 @@ DWORD WINAPI Worker(LPVOID) {
             if (k.type == kList) memcpy(k.original, obj + kOffListIndex, 4);
             else memcpy(k.original, obj + kOffValue, sizeof(k.original));
             if (k.type == kFloat && k.name == kPackedName) memcpy(&g_stockCascadeFilterSize, k.original, 4);
+            if (k.type == kFloat && k.name == kAoCarrierName) memcpy(&g_stockAoBias, k.original, 4);
             g_knownIndex[k.name] = known.size();
             known.push_back(std::move(k));
             fresh.push_back(known.size() - 1);
@@ -1947,6 +2007,8 @@ extern "C" int __cdecl AWT_GetStatus(AwtStatus* out) {
     out->registered = (int)g_known.size();
     snprintf(out->preset, sizeof(out->preset), "%s", JoinActivePresetsLocked().c_str());
     out->sunSize = g_sunSize;
+    out->gtao = g_gtao;
+    out->aoFxSource = g_modOff ? AWT_SRC_NONE : g_aoFxSource;
     out->contactShadows = g_contactShadows;
     out->shadowFxSource = g_modOff ? AWT_SRC_NONE : g_shadowFxSource;
     ReleaseSRWLockShared(&g_knownLock);
@@ -2010,12 +2072,12 @@ extern "C" int __cdecl AWT_Set(const char* name, const float* v) {
     AcquireSRWLockExclusive(&g_knownLock);
     auto it = g_knownIndex.find(name);
     int ok = 0;
-    if (IsShadowFxName(name)) {  // not engine tweakables: the worker packs them on re-derive
+    if (const char* pseudo = PseudoName(name)) {  // not engine tweakables: packed on re-derive
         Override o;
         o.f[0] = (std::max)(0.0f, v[0]);
         o.count = 1;
         o.raw = FormatValue(nullptr, kFloat, o.f);
-        g_ui[Lower(name) == Lower(kSunSizeName) ? kSunSizeName : kContactShadowsName] = o;
+        g_ui[pseudo] = o;
         ok = 1;
     } else if (it != g_knownIndex.end()) {
         Known& k = g_known[it->second];
@@ -2026,6 +2088,7 @@ extern "C" int __cdecl AWT_Set(const char* name, const float* v) {
         o.b = v[0] != 0.0f;
         if (k.type == kFloat) o.f[0] = SafeCascadeResolution(k.name, o.f[0]);
         if (k.type == kFloat && k.name == kPackedName) o.f[0] = RoundFilterSize(o.f[0]);
+        if (k.type == kFloat && k.name == kAoCarrierName) o.f[0] = RoundAoBias(o.f[0]);
         o.raw = FormatValue(&k, k.type, o.f);
         if (k.type == kBool || k.type == kFloat || k.type == kColor || k.type == kList) {
             g_ui[k.name] = o;

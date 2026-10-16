@@ -224,6 +224,30 @@ quarter-res view depth, two plain samplers and HBAO+ constants: all three
 match the originals bit for bit. The add-on's replacement code handles both
 shader families, each with its own `[Shaders]` key and stats.
 
+**GTAO (`AOShader=Enhanced`).** With `AWTweaks:GTAO` above 0 the pass runs
+ground-truth AO (Jimenez et al. 2016) in place of the HBAO+ loop. It uses the
+same quarter-res layers, radius, distance falloff, per-pass jitter and depth
+fade. Per pixel it searches 4 slices both ways, 6 steps per side, for the
+highest horizon. It then integrates cosine-weighted visibility between the two
+horizons analytically, against the normal projected into the slice. Each slice
+is divided by its open-hemisphere integral, so a flat surface is exactly 1.
+Thickness heuristic: a sample below the horizon pulls it down by 15 % × its
+distance falloff, so samples beyond the radius can't erase a nearby occluder. Occlusion = (1 − visibility) × strength
+× 2 × (SmallScaleAO + LargeScaleAO) / 2. The output still goes through the
+game's blur and power exponent.
+
+Settings channel: the DLL rounds `HBAO:Bias` (read only by `coarseAOPS`) to
+0.001 and adds 0.000001 × strength in 0.1 steps (1–30); F10 or strength 0
+leaves the plain value and the original code runs. API v7 reports the
+effective strength. `AOShader=Debug` shows 32-px stripes, or 128 px while GTAO
+is on.
+
+`shader_compare --hbao [--flat | --blocks | --corner] ... <seeds> <code>`
+checks the GTAO output: flat wall = 1.000, and in a wall corner strength 1 gives
+1.1–1.2× HBAO+'s occlusion. In game the cost is too small to measure: Stock
+156.0, Ultra+ 135.9 (GTAO 1.0), Cinematic 129.8 FPS (GTAO 1.5), at a different
+spot from the shadow measurements.
+
 ### Hotkeys and presets
 `ToggleKey` (F10) A/B-toggles every override and `LightShadowScale` back to
 stock; `PresetKey` (F9) cycles `[Preset:Name]` sections, which apply on top of
@@ -241,4 +265,5 @@ winget install MartinStorsjo.LLVM-MinGW.UCRT
 ## Test
 `test\harness.cpp` fakes the registry (same signature and layout) and checks
 float/bool/color writes, late registration, enforce, hot reload, clamping,
-restore-on-removal, XInput forwarding, the dump and the shadow-settings packing.
+restore-on-removal, XInput forwarding, the dump and the shadow- and AO-settings
+packing.

@@ -3,7 +3,7 @@
 #pragma once
 #include <cstdint>
 
-#define AWT_API_VERSION 6
+#define AWT_API_VERSION 7
 
 enum AwtType : int32_t { AWT_BOOL = 0, AWT_FLOAT = 1, AWT_COLOR = 3, AWT_LIST = 5 };  // others: read-only
 enum AwtSource : int32_t { AWT_SRC_NONE = 0, AWT_SRC_TWEAKS = 1, AWT_SRC_PRESET = 2, AWT_SRC_OVERLAY = 3 };
@@ -29,6 +29,10 @@ struct AwtStatus {
     float sunSize;           // degrees, 0 = the game's filter
     float contactShadows;    // metres, 0 = off
     int32_t shadowFxSource;  // AwtSource of whichever of the two is set most specifically
+    // v7: AWTweaks AO shader setting (AWT_Set("AWTweaks:GTAO"): strength, 0 = the game's
+    // HBAO+ .. 3; takes effect with the add-on's [Shaders] AOShader=Enhanced).
+    float gtao;
+    int32_t aoFxSource;
 };
 
 // v3: photo mode.

@@ -52,10 +52,10 @@ foreach ($taps in 12, 10) {
 }
 Build-Header 'shadow_buffer.hlsl' 'shadow_buffer_blobs.h' $shadow
 
-# HBAO+ coarse AO: 4, 6 or 8 directions.
+# HBAO+ coarse AO: 4, 6 or 8 directions; enhanced (GTAO on request, else the original code).
 $hbao = @()
 foreach ($dirs in 4, 6, 8) {
-    $hbao += , @("AoDir$dirs", @("NUM_DIRECTIONS=$dirs", 'DEBUG_STRIPES=0'))
-    $hbao += , @("AoDir${dirs}Debug", @("NUM_DIRECTIONS=$dirs", 'DEBUG_STRIPES=1'))
+    $hbao += , @("AoDir$dirs", @("NUM_DIRECTIONS=$dirs", 'ENHANCED=1', 'DEBUG_STRIPES=0'))
+    $hbao += , @("AoDir${dirs}Debug", @("NUM_DIRECTIONS=$dirs", 'ENHANCED=1', 'DEBUG_STRIPES=1'))
 }
 Build-Header 'hbao_coarse.hlsl' 'hbao_blobs.h' $hbao
