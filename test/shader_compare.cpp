@@ -263,6 +263,7 @@ int main(int argc, char** argv) {
     bool flat = false;  // --hbao --flat: a flat wall facing the camera (AO must be ~1)
     bool blocks = false;
     bool corner = false;  // --hbao --corner: a back wall at 6 m meeting a side wall at x = -1.5 m
+    bool halo = false;    // --hbao --halo: a square 0.6 m in front of a wall at 6 m
     if (argc > 1 && !strcmp(argv[1], "--hbao")) {
         g_hbao = true;
         --argc;
@@ -277,6 +278,10 @@ int main(int argc, char** argv) {
             ++argv;
         } else if (argc > 1 && !strcmp(argv[1], "--corner")) {
             flat = corner = true;
+            --argc;
+            ++argv;
+        } else if (argc > 1 && !strcmp(argv[1], "--halo")) {
+            flat = corner = halo = true;
             --argc;
             ++argv;
         }
@@ -390,7 +395,10 @@ int main(int argc, char** argv) {
                                                                                             : z + 0.02f * u(rng);
                     float nx = u(rng) * 2 - 1, ny = u(rng) * 2 - 1, nz = -(0.3f + u(rng));
                     if (flat) nx = ny = 0.0f, nz = -1.0f;
-                    if (corner) {  // inside corner: whichever wall is nearer along the view ray
+                    if (halo) {
+                        bool inSquare = x >= kW * 3 / 8 && x < kW * 5 / 8 && y >= kH * 3 / 8 && y < kH * 5 / 8;
+                        viewDepth[y * kW + x] = inSquare ? 5.4f : 6.0f;
+                    } else if (corner) {  // inside corner: whichever wall is nearer along the view ray
                         float tanHalf;
                         memcpy(&tanHalf, &cornerCb[524], 4);
                         float dx = (2.0f * (x + 0.5f) / kW - 1.0f) * tanHalf;
@@ -418,6 +426,17 @@ int main(int argc, char** argv) {
                                   D3D12_RESOURCE_STATE_COPY_DEST};
         }
         auto cb = corner ? cornerCb : g_hbao ? MakeConstantsHBAO(rng) : MakeConstants(rng);
+        if (halo) {  // the game's radius is huge (50 "m", held back only by the screen clamps)
+            float tanHalf, radius = 3.0f + seed, v;
+            memcpy(&tanHalf, &cb[524], 4);
+            v = -1.0f / (radius * radius);
+            memcpy(&cb[560], &v, 4);
+            v = radius * 0.5f * kH / tanHalf;
+            memcpy(&cb[564], &v, 4);
+            v = -1.0f;
+            memcpy(&cb[568], &v, 4);
+            memcpy(&cb[572], &v, 4);
+        }
         if (enhanced && g_hbao) {  // HBAO bias (on the 0.001 grid) plus code * 0.000001
             float bias;
             memcpy(&bias, &cb[576], 4);
@@ -465,8 +484,11 @@ int main(int argc, char** argv) {
             if (corner) {  // occlusion (1 - AO) where the original darkens, original vs enhanced
                 double occA = 0, occB = 0;
                 size_t m = 0;
-                for (size_t i = 0; i < a.size(); i += 4)
-                    if (a[i] < 0.98f) occA += 1 - a[i], occB += 1 - b[i], ++m;
+                for (size_t i = 0; i < a.size(); i += 4) {
+                    size_t px = i / 4, x = px % kW, y = px / kW;
+                    bool inSquare = x >= kW * 3 / 8 && x < kW * 5 / 8 && y >= kH * 3 / 8 && y < kH * 5 / 8;
+                    if (halo ? !inSquare : a[i] < 0.98f) occA += 1 - a[i], occB += 1 - b[i], ++m;
+                }
                 float r, sm, lg;
                 memcpy(&r, &cb[560], 4);
                 memcpy(&sm, &cb[580], 4);

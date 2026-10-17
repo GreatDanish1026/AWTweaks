@@ -2,7 +2,9 @@
 //  - shadow: ShadowBuffer.rfx "update_shadow_buffer_PS" (the screen-space sun/moon shadow
 //    mask), from src/shaders/shadow_buffer.hlsl: rebuilt bit-identical, plus optional soft
 //    and contact shadows the main DLL switches on (see the .hlsl);
-//  - AO: HBAO.rfx "coarseAOPS" (NVIDIA HBAO+), from src/shaders/hbao_coarse.hlsl.
+//  - AO: HBAO.rfx "coarseAOPS" (NVIDIA HBAO+), from src/shaders/hbao_coarse.hlsl;
+//  - SSS: SSSSS.rfx "sss_blurPS" (skin subsurface scattering), so far only a diagnostic
+//    view from src/shaders/sss_debug.hlsl.
 // ReShade reports every pipeline the game creates; when its pixel shader is one of the
 // originals (matched by the DXBC container digest and size) we swap in ours.
 // Each family's mode comes from awtweaks.ini [Shaders], read at game start.
@@ -19,6 +21,7 @@
 
 #include "../shaders/hbao_blobs.h"
 #include "../shaders/shadow_buffer_blobs.h"
+#include "../shaders/sss_blobs.h"
 #include "shader_replace.h"
 
 namespace shader_replace {
@@ -30,7 +33,7 @@ struct Variant {
     const char* name;
     uint8_t digest[16];  // DXBC container hash of the game's shader (bytes 4..20)
     size_t size;
-    const uint8_t* enhanced;
+    const uint8_t* enhanced;  // null: Enhanced runs the original
     size_t enhancedSize;
     const uint8_t* debug;
     size_t debugSize;
@@ -64,6 +67,12 @@ const Variant kAoVariants[] = {
      18527, kAoDir8, sizeof(kAoDir8), kAoDir8Debug, sizeof(kAoDir8Debug)},
 };
 
+const Variant kSssVariants[] = {
+    {"blur",
+     {0x98, 0x2a, 0x42, 0x4e, 0x05, 0x89, 0x0f, 0x5b, 0xec, 0xdd, 0xaf, 0x64, 0x08, 0xe6, 0x9b, 0xb6},
+     10239, nullptr, 0, kSssDebug, sizeof(kSssDebug)},
+};
+
 struct FamilyState {
     const char* label;      // for the log
     const wchar_t* iniKey;  // [Shaders] key
@@ -78,6 +87,7 @@ struct FamilyState {
 FamilyState g_families[] = {
     {"shadow", L"ShadowShader", kShadowVariants, sizeof(kShadowVariants) / sizeof(Variant)},
     {"AO", L"AOShader", kAoVariants, sizeof(kAoVariants) / sizeof(Variant)},
+    {"SSS", L"SSSShader", kSssVariants, sizeof(kSssVariants) / sizeof(Variant)},
 };
 constexpr int kNumFamilies = sizeof(g_families) / sizeof(g_families[0]);
 bool g_registered = false;
@@ -136,6 +146,7 @@ bool OnCreatePipeline(device* dev, pipeline_layout, uint32_t count, const pipeli
         if (fam.mode == Mode::Original) continue;
         const Variant& var = fam.variants[v];
         const bool debug = fam.mode == Mode::Debug;
+        if (!debug && !var.enhanced) continue;
         desc->code = debug ? var.debug : var.enhanced;
         desc->code_size = debug ? var.debugSize : var.enhancedSize;
         changed = true;
@@ -156,7 +167,7 @@ void OnInitPipeline(device*, pipeline_layout, uint32_t count, const pipeline_sub
         int f, v;
         if (!Find(desc->code, desc->code_size, &f, &v)) continue;
         FamilyState& fam = g_families[f];
-        if (fam.mode != Mode::Original && ++fam.missed == 1)
+        if (fam.mode != Mode::Original && (fam.mode == Mode::Debug || fam.variants[v].enhanced) && ++fam.missed == 1)
             Log(reshade::log::level::warning, "AWTweaks: %s shader '%s' was created without replacement",
                 fam.label, fam.variants[v].name);
     }
@@ -169,7 +180,7 @@ void Install() {
     for (FamilyState& fam : g_families) {
         fam.mode = ReadMode(fam.iniKey);
         Log(reshade::log::level::info, "AWTweaks: [Shaders] %ls=%s", fam.iniKey,
-            ModeName(&fam - g_families == 0 ? Family::Shadow : Family::AO));
+            ModeName(static_cast<Family>(&fam - g_families)));
         any |= fam.mode != Mode::Original;
     }
     if (!any) return;

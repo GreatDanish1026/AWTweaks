@@ -59,3 +59,6 @@ foreach ($dirs in 4, 6, 8) {
     $hbao += , @("AoDir${dirs}Debug", @("NUM_DIRECTIONS=$dirs", 'ENHANCED=1', 'DEBUG_STRIPES=1'))
 }
 Build-Header 'hbao_coarse.hlsl' 'hbao_blobs.h' $hbao
+
+# Skin subsurface scattering blur: a diagnostic only, so far.
+Build-Header 'sss_debug.hlsl' 'sss_blobs.h' @(, @('SssDebug', @('DEBUG_STRIPES=1')))

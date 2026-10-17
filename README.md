@@ -11,6 +11,9 @@ Graphics, lighting and photo-mode mod for **Alan Wake Remastered** (PC).
 - **Ground-truth ambient occlusion** (with the ReShade add-on) – GTAO in place
   of the game's HBAO+: deeper shading in corners and creases, none on open
   surfaces, and no dark halos around thin objects.
+- **Better-lit faces** – the game's skin light scattering switched on as
+  designed (it ships practically off), and character lighting at night with a
+  key and a fill light instead of two equal ones.
 - **Quality presets** – *Ultra+* and *Cinematic* also raise ambient occlusion,
   fog and rain resolution, light shafts, grass draw distance and model detail.
 - **Darker Nights** – optional look where the flashlight really matters.
@@ -76,6 +79,8 @@ Every key can be changed in `awtweaks.ini`.
 | Shadow edge softness (cascade filter size) | 9 | 11 | 13 |
 | Soft shadows (sun size)\* | off | 0.5° | 1.0° |
 | Contact shadows\* | off | 0.3 m | 0.6 m |
+| Skin light scattering | practically off | on | on |
+| Character lights at night (key / fill) | 0.31 / 0.31 | 0.5 / 0.1 | 0.5 / 0.1 |
 | **Frame-rate cost vs Stock** | – | **about 13%** | **about 19%** |
 
 \* Need the ReShade add-on. Adjust them with the *Sun and moon shadows* and
@@ -89,7 +94,7 @@ run the same button to check yours.
 
 *Darker Nights* can be combined with any of them: less automatic brightening at
 night, no invisible light following Alan, dimmer fill lights on characters, and
-a darker sky and fog.
+a darker sky and fog. Its character lights replace the presets' night values.
 
 Cinematic is the heaviest. If your frame rate drops, use Ultra+, turn the
 soft and contact shadow sliders down (0 = off), or set `AtlasScale=1` under

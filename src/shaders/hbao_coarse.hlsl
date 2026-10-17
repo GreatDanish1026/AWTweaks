@@ -123,6 +123,8 @@ float GtaoStrength()
 // GTAO occludes less than HBAO+ away from creases; at strength 1 its darkest contact
 // shading matches HBAO+'s.
 static const float kGtaoCalibration = 2.0;
+// Fraction of the HBAO+ radius GTAO searches.
+static const float kGtaoRadiusScale = 0.5;
 
 #if ENHANCED
 // ---------------------------------------------------------------- GTAO
@@ -207,7 +209,11 @@ float4 main(float4 svPos : SV_Position, float2 texCoord : TEXCOORD0) : SV_Target
     if (gtaoStrength > 0.0)
     {
         // Strength follows the game's AO amounts too (stock 1.1 small, 2 large).
-        float occlusion = (1.0 - Gtao(uv, p, n, r)) * gtaoStrength * kGtaoCalibration *
+        // GTAO's max horizon spreads crease shading across the whole HBAO+ radius (huge in
+        // this game), so it searches a tighter one: contact shading, not smudges.
+        RadiusParams gtaoRadius = r;
+        ScaleRadius(gtaoRadius, kGtaoRadiusScale);
+        float occlusion = (1.0 - Gtao(uv, p, n, gtaoRadius)) * gtaoStrength * kGtaoCalibration *
                           ((BiasSmallScaleLargeScale.y + BiasSmallScaleLargeScale.z) * 0.5);
         if (PixelSizeDepthThresholdNegInvSharpness.w != -1.0)
             occlusion *= saturate((PixelSizeDepthThresholdNegInvSharpness.z * p.z + 1.0) *

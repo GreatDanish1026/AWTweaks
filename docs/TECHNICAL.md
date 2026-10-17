@@ -226,13 +226,17 @@ shader families, each with its own `[Shaders]` key and stats.
 
 **GTAO (`AOShader=Enhanced`).** With `AWTweaks:GTAO` above 0 the pass runs
 ground-truth AO (Jimenez et al. 2016) in place of the HBAO+ loop. It uses the
-same quarter-res layers, radius, distance falloff, per-pass jitter and depth
-fade. Per pixel it searches 4 slices both ways, 6 steps per side, for the
-highest horizon. It then integrates cosine-weighted visibility between the two
-horizons analytically, against the normal projected into the slice. Each slice
-is divided by its open-hemisphere integral, so a flat surface is exactly 1.
-Thickness heuristic: a sample below the horizon pulls it down by 15 % × its
-distance falloff, so samples beyond the radius can't erase a nearby occluder. Occlusion = (1 − visibility) × strength
+same quarter-res layers, distance falloff, per-pass jitter and depth fade, but
+half of HBAO+'s radius (`kGtaoRadiusScale`). The game's radius is huge
+(`HBAO:Radius In Meters` 50, held back only by HBAO+'s screen-space clamps), and
+over all of it GTAO's highest horizon spread crease shading into wide smudges
+around clutter like coats and shelves. Per pixel it searches 4 slices both
+ways, 6 steps per side, for the highest horizon. It then integrates
+cosine-weighted visibility between the two horizons analytically, against the
+normal projected into the slice. Each slice is divided by its open-hemisphere
+integral, so a flat surface is exactly 1. Thickness heuristic: a sample below
+the horizon pulls it down by 15 % × its distance falloff, so samples beyond the
+radius can't erase a nearby occluder. Occlusion = (1 − visibility) × strength
 × 2 × (SmallScaleAO + LargeScaleAO) / 2. The output still goes through the
 game's blur and power exponent.
 
@@ -242,11 +246,54 @@ leaves the plain value and the original code runs. API v7 reports the
 effective strength. `AOShader=Debug` shows 32-px stripes, or 128 px while GTAO
 is on.
 
-`shader_compare --hbao [--flat | --blocks | --corner] ... <seeds> <code>`
-checks the GTAO output: flat wall = 1.000, and in a wall corner strength 1 gives
-1.1–1.2× HBAO+'s occlusion. In game the cost is too small to measure: Stock
-156.0, Ultra+ 135.9 (GTAO 1.0), Cinematic 129.8 FPS (GTAO 1.5), at a different
-spot from the shadow measurements.
+`shader_compare --hbao [--flat | --blocks | --corner | --halo] ... <seeds> <code>`
+checks the GTAO output. A flat wall comes out 1.000. In a wall corner, strength 1
+is a little darker than HBAO+ right in the crease (0.69 vs 0.76) but about half
+as wide (0.35–0.8× its total occlusion). `--halo`, a square 0.6 m in front of a
+wall with a 4–9 m radius, leaves the wall clean. In game the cost is too small
+to measure: Stock 156.0, Ultra+ 135.9 (GTAO 1.0), Cinematic 129.8 FPS (GTAO
+1.5), at a different spot from the shadow measurements.
+
+### Skin and faces
+Characters' skin is `Skin_d3t.shaderbin` (the older `Skin.shaderbin` is never
+drawn on PC). Three passes per character:
+- G-buffer: normal and specular maps, to 3 targets.
+- Depth/shadow.
+- Composition (`material`): it combines the deferred light buffer with the sun
+  (shadow mask and projection map), the character light rig, flashlight bounce,
+  rim light, 8 ambient lights and 20 wrinkle maps. Its second target carries
+  specular, with view depth in `.w`.
+
+`Eye.shaderbin` never draws.
+
+`SSSSS.shaderbin` "sss_blurPS" is Jimenez's separable subsurface scattering
+(2012). It runs a 17-tap blur twice, horizontal then vertical, on pixels whose
+specular `.w` is above 0, with a red-heavy skin profile. Step =
+`g_fSSSWidth / (tan(fov/2) × depth)`, so the width is in metres. Each tap is
+pulled back to the centre colour by
+`saturate(g_fFollowSurfaceScale × width / tan(fov/2) × |Δdepth|)`; the
+reference code's constant there is 300. The engine ships `Skin Shader:SSS Width`
+0.0002 (0.2 mm, about one pixel) and `Follow Surface Scale` 30000, which cancels
+the blur wherever two taps differ by about 2 mm in depth. Together the effect
+is practically off. The presets use 0.008 / 300. In game the change follows
+features (eyelids, nostrils, lips, mostly red) and stays subtle under the
+game's desaturated grade. The pass already ran, so there's no added cost.
+
+The character light rig is three invisible lights per character: front-left,
+front-right and behind, at 0.31 / 0.31 / 0.05 at night. With equal lights 1 and 2,
+a face is lit evenly from both sides, so the presets use 0.5 / 0.1 at night.
+`HBAO:Skin Intensity` and `Eye Intensity` showed no effect from 0 to 1.
+
+Diagnostics:
+- `[Shaders] SSSShader=Debug` replaces the blur with
+  `src/shaders/sss_debug.hlsl`: on skin, green stripes show where the blur runs
+  and red stripes scale with `g_fSSSWidth`. It proved the mask covers the face
+  and the width slider reaches the shader.
+- `[Debug] WatchShaders=SSSSS,Skin_d3t,...` (`src/addon/shader_watch.cpp`)
+  reads those shaderbins and logs which of their pixel shaders get pipelines and
+  how many draws use each every 5 s, numbered like the extracted blobs.
+- Advanced sliders whose stock value is under 1% of their range, like SSS Width
+  in 0..1, are logarithmic so they can be dragged.
 
 ### Hotkeys and presets
 `ToggleKey` (F10) A/B-toggles every override and `LightShadowScale` back to

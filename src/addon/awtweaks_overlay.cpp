@@ -20,6 +20,7 @@
 #include "../awtweaks_api.h"
 #include "../version.h"
 #include "shader_replace.h"
+#include "shader_watch.h"
 
 extern "C" __declspec(dllexport) const char* NAME = "AWTweaks";
 extern "C" __declspec(dllexport) const char* DESCRIPTION =
@@ -156,7 +157,13 @@ void DrawItem(const AwtInfo& t, const std::string& label) {
         }
     } else if (t.type == AWT_FLOAT) {
         // Ctrl+click types a value, which may go past the engine's slider range.
-        if (t.min < t.max)
+        // A stock value far below the range (e.g. Skin Shader:SSS Width 0.0002 in 0..1)
+        // gets a logarithmic slider, or a pixel of drag would jump past it.
+        const bool tiny = t.min >= 0.0f && t.original[0] > 0.0f && t.original[0] < (t.max - t.min) * 0.01f;
+        if (t.min < t.max && tiny)
+            edited = ImGui::SliderFloat("##v", &v[0], t.min, t.max, "%.6g",
+                                        ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_NoRoundToFormat);
+        else if (t.min < t.max)
             edited = ImGui::SliderFloat("##v", &v[0], t.min, t.max, "%.4g", ImGuiSliderFlags_None);
         else
             edited = ImGui::DragFloat("##v", &v[0], 0.01f, 0.0f, 0.0f, "%.4g", ImGuiSliderFlags_None);
@@ -534,8 +541,10 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
             if (!reshade::register_addon(module)) return FALSE;
             reshade::register_overlay("AWTweaks", &DrawOverlay);
             shader_replace::Install();
+            shader_watch::Install();
             break;
         case DLL_PROCESS_DETACH:
+            shader_watch::Uninstall();
             shader_replace::Uninstall();
             reshade::unregister_overlay("AWTweaks", &DrawOverlay);
             reshade::unregister_addon(module);
