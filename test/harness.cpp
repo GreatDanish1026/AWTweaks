@@ -112,7 +112,7 @@ using AllocateFn = void*(__fastcall*)(void*, int, int, uint8_t);
 struct alignas(16) Obj {
     uint8_t raw[0xE0];  // lists keep their selected index at +0xD0
 };
-static Obj objs[8];
+static Obj objs[16];
 static char names[8][128];
 
 static uint8_t* Make(int i, const char* name, int type) {
@@ -617,9 +617,12 @@ int wmain(int argc, wchar_t** argv) {
     {
         uint8_t* pcf = Make(7, "Shadow Filtering d3t:Cascade Filter Size", 1);
         F(7)[0] = 9.0f; F(7)[1] = 1.0f; F(7)[2] = 16.0f;
+        uint8_t* spot = Make(8, "Shadow Filtering d3t:Filter Size", 1);
+        F(8)[0] = 5.0f; F(8)[1] = 1.0f; F(8)[2] = 16.0f;
         auto close = [](float a, double b) { return (a - b) < 1e-6 && (b - a) < 1e-6; };
         g_reg[7] = pcf;
-        g_cnt = 8;
+        g_reg[8] = spot;
+        g_cnt = 9;
         auto status = (PFN_AWT_GetStatus)GetProcAddress(m, "AWT_GetStatus");
         auto set = (PFN_AWT_Set)GetProcAddress(m, "AWT_Set");
         auto reset = (PFN_AWT_Reset)GetProcAddress(m, "AWT_Reset");
@@ -682,6 +685,35 @@ int wmain(int argc, wchar_t** argv) {
         WriteIni(dir + L"\\awtweaks.ini", "[Settings]\nPollMs=20\n[Tweaks]\nHBAO:Bias=0.1234\n");
         Sleep(300);
         CHECK(close(F(3)[0], 0.123));  // off: just rounded to the grid
+
+        // v8: flashlight (spotlight) settings ride in "Filter Size" like the sun's in
+        // "Cascade Filter Size": lens radius in 0.2 cm steps * 100 + contact in 2 cm steps.
+        WriteIni(dir + L"\\awtweaks.ini", "[Settings]\nPollMs=20\n[Tweaks]\nAWTweaks:Flashlight Softness=3\n"
+                                          "AWTweaks:Flashlight Contact Shadows=0.3\n");
+        Sleep(300);
+        CHECK(close(F(8)[0], 5.01516));  // code 1 + 15 * 100 + 15
+        CHECK(F(7)[0] == 9.0f);           // the sun's carrier is untouched
+        status(&st);
+        CHECK(st.flashSoftness == 3.0f && st.flashContact > 0.299f && st.flashContact < 0.301f &&
+              st.flashFxSource == AWT_SRC_TWEAKS);
+        float lens = 1.0f;
+        CHECK(set("AWTweaks:Flashlight Softness", &lens) == 1);
+        Sleep(200);
+        CHECK(close(F(8)[0], 5.00516));
+        status(&st);
+        CHECK(st.flashFxSource == AWT_SRC_OVERLAY);
+        setModOn(0);
+        Sleep(200);
+        CHECK(F(8)[0] == 5.0f);  // F10: the engine's value, so the shader runs stock
+        setModOn(1);
+        reset(nullptr);
+        WriteIni(dir + L"\\awtweaks.ini", "[Settings]\nPollMs=20\n[Tweaks]\nShadow Filtering d3t:Filter Size=6.04\n"
+                                          "AWTweaks:Flashlight Contact Shadows=0.5\n");
+        Sleep(300);
+        CHECK(close(F(8)[0], 6.00026));  // on top of a set size, kept on the 0.1 grid
+        WriteIni(dir + L"\\awtweaks.ini", "[Settings]\nPollMs=20\n[Tweaks]\nShadow Filtering d3t:Filter Size=6.04\n");
+        Sleep(300);
+        CHECK(F(8)[0] == 6.0f);  // off: just rounded to the grid
 
         WriteIni(dir + L"\\awtweaks.ini",
                  "[Settings]\nClampToRange=true\nPollMs=20\n[Tweaks]\nHBAO:Bias=5\n"

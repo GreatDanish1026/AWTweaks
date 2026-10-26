@@ -164,7 +164,7 @@ bool OnDrawIndirect(command_list* cmd, indirect_command type, resource, uint64_t
     return false;
 }
 
-// Every 5 s: draws per watched shader since the last report.
+// Every 5 s: draws per watched shader since the last report, 8 to a log line.
 void OnPresent(command_queue*, swapchain*, const rect*, const rect*, uint32_t, const rect*) {
     ULONGLONG now = GetTickCount64();
     if (now - g_lastReport < 5000) return;
@@ -175,13 +175,16 @@ void OnPresent(command_queue*, swapchain*, const rect*, const rect*, uint32_t, c
         uint64_t total = w.draws.load();
         if (total == w.reported) continue;
         char buf[128];
-        snprintf(buf, sizeof(buf), "%s%s: %llu", shown ? ", " : "", w.label.c_str(),
+        snprintf(buf, sizeof(buf), "%s%s: %llu", shown % 8 ? ", " : "", w.label.c_str(),
                  (unsigned long long)(total - w.reported));
         line += buf;
         w.reported = total;
-        if (++shown == 12) break;
+        if (++shown % 8 == 0) {
+            Log("AWTweaks watch: draws in the last 5 s: %s", line.c_str());
+            line.clear();
+        }
     }
-    if (shown) Log("AWTweaks watch: draws in the last 5 s: %s", line.c_str());
+    if (!line.empty()) Log("AWTweaks watch: draws in the last 5 s: %s", line.c_str());
 }
 
 }  // namespace

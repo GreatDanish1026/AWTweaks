@@ -254,6 +254,58 @@ wall with a 4–9 m radius, leaves the wall clean. In game the cost is too small
 to measure: Stock 156.0, Ultra+ 135.9 (GTAO 1.0), Cinematic 129.8 FPS (GTAO
 1.5), at a different spot from the shadow measurements.
 
+### Flashlight shadows (`[Shaders] SpotShader`)
+Shadow-casting spotlights (Alan's flashlight, some lamps) are a deferred pass,
+`DeferredLight.shaderbin` "spotlightPS". `[Debug] WatchShaders` showed only one
+of its variants is ever created: the one with a shadow map and projection
+texture (blob #25, 11615 bytes, 1–4 draws a frame). Material shaders bind a
+`g_sShadowMap` too, but don't draw it.
+
+The shader:
+- reads the G-buffer (normals, tangent and gloss, linear depth = view z);
+- multiplies falloff `saturate(exp(−d·f.x) − f.y)` × colour × projection
+  texture;
+- shadows with a 10-tap Vogel PCF of radius `g_fPCFSize_d3t` ("Shadow Filtering
+  d3t:Filter Size") × 0.5 texels, rotated by interleaved gradient noise and
+  blended by `g_fShadowLOD`;
+- lights with a Ward BRDF where there's a tangent (αx = gloss × 255, αy = 0.2),
+  otherwise gloss-driven Blinn-Phong;
+- writes diffuse rgb and specular luminance × exposure, clamped to 32.
+
+`src/shaders/deferred_spotlight.hlsl` rebuilds it bit for bit. That took the
+game's float constants via `asfloat`, `pow(x, 2)` written as
+`exp2(log2(|x|) × 2)` as the original compiler emitted it, and `precise` on
+the colour chain, the diffuse term and the final exposure multiply to keep the
+original's operation order. `shader_compare --spot` feeds the six textures and
+spotlight constants (a flashlight beside the camera, perspective light and
+shadow matrices): 100% of pixels match on 10 seeds, covering Ward and Blinn
+paths, zero gloss and partial shadow fades.
+
+Enhanced (with the settings channel below):
+- **Soft shadows (PCSS).** It searches 16 taps for blockers, then widens a
+  24-tap filter to lens × (receiver − blocker) / blocker, the penumbra a disc
+  light of that radius casts. Shadow depth is perspective (z/w with
+  z = a·w + b along the light's rays); `a` and `b` are measured per pixel from
+  the receiver and a point twice as far from the light, then blocker depth is
+  converted back to metres. Taps get a slope bias `|b| / w² / (UV per metre)`
+  per UV unit of offset.
+- **Contact shadows.** A 12-step screen-space march towards the light's
+  position, mapped to pixels through the view ray's derivatives like the sun's.
+
+Settings channel: `AWTweaks:Flashlight Softness` (lens radius, 0.2 cm steps)
+and `AWTweaks:Flashlight Contact Shadows` (2 cm steps) ride in Filter Size,
+rounded to 0.1, + 0.00001 × (1 + lens × 100 + contact). The material shaders
+that also read it don't notice the extra digits. API v8 reports both.
+`SpotShader=Debug` blanks the spotlights' light in 32-px stripes, 128 px while
+the settings arrive.
+
+In game, softness 3 cm turns the stair-stepped edge of a door frame's shadow
+into a smooth penumbra. Contact shadows add little: a line where frames meet
+walls, and they dim a highlight at a depth edge. So the presets use softness
+2 cm (Ultra+) and 3 cm (Cinematic) and leave contact off. Night benchmark with
+the flashlight on (presets as a whole): Stock 155.8, Ultra+ 150.5, Cinematic
+143.5 FPS.
+
 ### Skin and faces
 Characters' skin is `Skin_d3t.shaderbin` (the older `Skin.shaderbin` is never
 drawn on PC). Three passes per character:
@@ -312,5 +364,5 @@ winget install MartinStorsjo.LLVM-MinGW.UCRT
 ## Test
 `test\harness.cpp` fakes the registry (same signature and layout) and checks
 float/bool/color writes, late registration, enforce, hot reload, clamping,
-restore-on-removal, XInput forwarding, the dump and the shadow- and AO-settings
-packing.
+restore-on-removal, XInput forwarding, the dump and the shadow-, flashlight-
+and AO-settings packing.

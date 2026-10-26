@@ -259,7 +259,282 @@ static std::vector<uint8_t> MakeConstantsHBAO(std::mt19937& rng) {
     return cb;
 }
 
+// ---------------------------------------------------------------- --spot
+// DeferredLight.rfx "spotlightPS" (shadow map + projection map): t0 linear depth,
+// t1 normals, t2 tangent + gloss, t3 exposure, t4 shadow map, t5 projection map;
+// s0-s3 and s5 linear clamp, s4 PCF compare.
+static ID3D12RootSignature* MakeSpotRootSignature(ID3D12Device* dev) {
+    D3D12_DESCRIPTOR_RANGE range = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 6, 0, 0, 0};
+    D3D12_ROOT_PARAMETER params[2] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[0].Descriptor = {0, 0};
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].DescriptorTable = {1, &range};
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_STATIC_SAMPLER_DESC s[6] = {};
+    for (int i = 0; i < 6; ++i) {
+        s[i].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        s[i].AddressU = s[i].AddressV = s[i].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        s[i].MaxLOD = D3D12_FLOAT32_MAX;
+        s[i].ShaderRegister = i;
+        s[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    }
+    s[0].Filter = s[1].Filter = s[2].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;  // G-buffer reads
+    s[4].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+    s[4].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    D3D12_ROOT_SIGNATURE_DESC rs = {2, params, 6, s, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT};
+    ID3DBlob* blob = nullptr;
+    ID3DBlob* err = nullptr;
+    if (FAILED(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err))) {
+        fprintf(stderr, "root signature: %s\n", err ? (const char*)err->GetBufferPointer() : "?");
+        exit(2);
+    }
+    ID3D12RootSignature* root = nullptr;
+    CHECKHR(dev->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
+                                     __uuidof(ID3D12RootSignature), (void**)&root));
+    return root;
+}
+
+// A flashlight 0.3 m right of and below the camera, pointing down the view (+z), with a
+// perspective projection (texture) and shadow matrix: 40 degree cone, near 0.1, far 60.
+static std::vector<uint8_t> MakeConstantsSpot(std::mt19937& rng, float* zNear, float* zFar) {
+    std::vector<uint8_t> cb(2048, 0);  // 1976 used
+    auto f = [&](size_t off, float v) { memcpy(&cb[off], &v, 4); };
+    std::uniform_real_distribution<float> u(0.0f, 1.0f);
+    f(424, (float)kW);  // g_vRenderRes
+    f(428, (float)kH);
+    f(472, (float)kShadowRes);  // g_vShadowMapRes
+    f(476, (float)kShadowRes);
+    f(500, std::round((2.0f + 8.0f * u(rng)) * 10.0f) / 10.0f);  // g_fPCFSize_d3t ("Filter Size")
+    const float lx = 0.3f, ly = -0.3f, lz = 0.0f;
+    f(1824, lx);  // g_vLightPosition
+    f(1828, ly);
+    f(1832, lz);
+    for (int c = 0; c < 3; ++c) f(1856 + 4 * c, 0.5f + 4.0f * u(rng));  // g_vLightColor
+    f(1872, 0.02f + 0.2f * u(rng));                                      // g_vLightFalloff
+    f(1876, 0.05f * u(rng));
+    const float n = 0.1f, fa = 60.0f, s = 1.0f / std::tan(20.0f * 3.14159265f / 180.0f);
+    const float a = fa / (fa - n), b = -n * fa / (fa - n);
+    *zNear = n;
+    *zFar = fa;
+    // Row-major: x' = s (x - lx) + small skew, y' = s (y - ly), z' = a (z - lz) + b, w' = z - lz.
+    auto proj = [&](size_t off, float skew) {
+        float m[4][4] = {{s, skew, 0.0f, -s * lx}, {0.0f, s, skew, -s * ly}, {0.0f, 0.0f, a, b - a * lz},
+                         {0.0f, 0.0f, 1.0f, -lz}};
+        for (int r = 0; r < 4; ++r)
+            for (int c = 0; c < 4; ++c) f(off + r * 16 + c * 4, m[r][c]);
+    };
+    proj(1440, 0.05f * u(rng));  // g_mLightProjectionMatrix
+    proj(1904, 0.0f);            // g_mShadowProjectionMatrix (shadow uv = x' * 0.5 + 0.5 by the caller's matrix)
+    // The shadow matrix maps to atlas uv directly: fold the * 0.5 + 0.5 (and y flip) in.
+    float sm[4][4];
+    memcpy(sm, &cb[1904], 64);
+    for (int c = 0; c < 4; ++c) {
+        float w = sm[3][c];
+        sm[0][c] = sm[0][c] * 0.5f + w * 0.5f;
+        sm[1][c] = -sm[1][c] * 0.5f + w * 0.5f;
+    }
+    memcpy(&cb[1904], sm, 64);
+    f(1968, u(rng) < 0.3f ? 1.0f : u(rng));  // g_fShadowLOD
+    return cb;
+}
+
+static int RunSpot(int argc, char** argv) {
+    if (argc < 4) {
+        fprintf(stderr, "usage: --spot vs.dxil original_ps.dxil replacement_ps.dxil [seeds] [settings]\n");
+        return 2;
+    }
+    auto vs = ReadFile(argv[1]), psA = ReadFile(argv[2]), psB = ReadFile(argv[3]);
+    const int seeds = argc > 4 ? atoi(argv[4]) : 8;
+    // Settings code (1 + lens * 100 + contact), carried in Filter Size's low digits: the
+    // outputs then differ, so check the replacement for NaNs and range instead.
+    const bool enhanced = argc > 5;
+    const float settings = enhanced ? (float)atof(argv[5]) : 0.0f;
+    Gpu g;
+    g.Init();
+    ID3D12RootSignature* root = MakeSpotRootSignature(g.dev);
+    ID3D12PipelineState* psoA = MakePso(g.dev, root, vs, psA);
+    ID3D12PipelineState* psoB = MakePso(g.dev, root, vs, psB);
+
+    const UINT res[6][2] = {{kW, kH}, {kW, kH}, {kW, kH}, {4, 4}, {kShadowRes, kShadowRes}, {64, 64}};
+    const bool rgba[6] = {false, true, true, false, false, true};
+    ID3D12Resource* tex[6];
+    for (int i = 0; i < 6; ++i)
+        tex[i] = g.Texture(res[i][0], res[i][1], rgba[i] ? DXGI_FORMAT_R32G32B32A32_FLOAT : DXGI_FORMAT_R32_FLOAT,
+                           D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
+    ID3D12Resource* rt = g.Texture(kW, kH, DXGI_FORMAT_R32G32B32A32_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+                                   D3D12_RESOURCE_STATE_RENDER_TARGET);
+    ID3D12Resource* cbuf = g.Buffer(2048, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
+    const UINT64 rbPitch = (kW * 16 + 255) & ~255ull;
+    ID3D12Resource* readback = g.Buffer(rbPitch * kH, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
+
+    D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 6,
+                                              D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
+    ID3D12DescriptorHeap* srvHeap = nullptr;
+    CHECKHR(g.dev->CreateDescriptorHeap(&srvHeapDesc, __uuidof(ID3D12DescriptorHeap), (void**)&srvHeap));
+    UINT inc = g.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu = srvHeap->GetCPUDescriptorHandleForHeapStart();
+    for (int i = 0; i < 6; ++i) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC sv = {};
+        sv.Format = rgba[i] ? DXGI_FORMAT_R32G32B32A32_FLOAT : DXGI_FORMAT_R32_FLOAT;
+        sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sv.Texture2D.MipLevels = 1;
+        g.dev->CreateShaderResourceView(tex[i], &sv, cpu);
+        cpu.ptr += inc;
+    }
+    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1};
+    ID3D12DescriptorHeap* rtvHeap = nullptr;
+    CHECKHR(g.dev->CreateDescriptorHeap(&rtvHeapDesc, __uuidof(ID3D12DescriptorHeap), (void**)&rtvHeap));
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    g.dev->CreateRenderTargetView(rt, nullptr, rtv);
+
+    auto render = [&](ID3D12PipelineState* pso, std::vector<float>& out) {
+        g.Begin();
+        g.list->SetGraphicsRootSignature(root);
+        g.list->SetDescriptorHeaps(1, &srvHeap);
+        g.list->SetGraphicsRootConstantBufferView(0, cbuf->GetGPUVirtualAddress());
+        g.list->SetGraphicsRootDescriptorTable(1, srvHeap->GetGPUDescriptorHandleForHeapStart());
+        g.list->SetPipelineState(pso);
+        D3D12_VIEWPORT vp = {0, 0, (float)kW, (float)kH, 0, 1};
+        D3D12_RECT sc = {0, 0, (LONG)kW, (LONG)kH};
+        g.list->RSSetViewports(1, &vp);
+        g.list->RSSetScissorRects(1, &sc);
+        g.list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+        g.list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        g.list->DrawInstanced(3, 1, 0, 0);
+        D3D12_RESOURCE_BARRIER b = {};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition = {rt, 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE};
+        g.list->ResourceBarrier(1, &b);
+        D3D12_TEXTURE_COPY_LOCATION src = {rt, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+        D3D12_TEXTURE_COPY_LOCATION dst = {readback, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+        dst.PlacedFootprint.Footprint = {DXGI_FORMAT_R32G32B32A32_FLOAT, kW, kH, 1, (UINT)rbPitch};
+        g.list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        b.Transition = {rt, 0, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET};
+        g.list->ResourceBarrier(1, &b);
+        g.SubmitAndWait();
+        out.resize(kW * kH * 4);
+        uint8_t* p = nullptr;
+        CHECKHR(readback->Map(0, nullptr, (void**)&p));
+        for (UINT y = 0; y < kH; ++y) memcpy(&out[y * kW * 4], p + y * rbPitch, kW * 16);
+        readback->Unmap(0, nullptr);
+    };
+
+    int failures = 0;
+    for (int seed = 1; seed <= seeds; ++seed) {
+        std::mt19937 rng(seed);
+        std::uniform_real_distribution<float> u(0.0f, 1.0f);
+        float zn, zf;
+        auto cb = MakeConstantsSpot(rng, &zn, &zf);
+        if (enhanced) {
+            float size;
+            memcpy(&size, &cb[500], 4);
+            size = (float)(size + settings * 0.00001);
+            memcpy(&cb[500], &size, 4);
+        }
+        // View depth (the test VS's ray has z = 400, so depth is view z): 1.5..20 m with blocks.
+        std::vector<float> depth(kW * kH), normals(kW * kH * 4), tangent(kW * kH * 4);
+        for (UINT y = 0; y < kH; ++y)
+            for (UINT x = 0; x < kW; ++x) {
+                size_t i = y * kW + x;
+                float z = 6.0f + 4.0f * std::sin(x * 0.04f + seed) * std::cos(y * 0.03f);
+                if (((x / 20) + (y / 20) + seed) % 4 == 0) z -= 1.5f;
+                depth[i] = std::max(1.5f, z + 0.01f * u(rng));
+                float nx = u(rng) * 2 - 1, ny = u(rng) * 2 - 1, nz = -(0.2f + u(rng));
+                float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+                normals[i * 4 + 0] = nx / len * 0.5f + 0.5f;
+                normals[i * 4 + 1] = ny / len * 0.5f + 0.5f;
+                normals[i * 4 + 2] = nz / len * 0.5f + 0.5f;
+                normals[i * 4 + 3] = 1.0f;
+                bool aniso = ((x / 32) + (y / 32)) % 2 == 0;  // half Ward, half Blinn-Phong
+                for (int c = 0; c < 3; ++c) tangent[i * 4 + c] = aniso ? u(rng) * 2 - 1 : 0.0f;
+                tangent[i * 4 + 3] = u(rng) < 0.1f ? 0.0f : u(rng);  // gloss, sometimes 0
+            }
+        std::vector<float> exposure(16, 0.5f + 1.5f * u(rng)), shadow(kShadowRes * kShadowRes), projMap(64 * 64 * 4);
+        // Shadow map: perspective depth of occluders 1..20 m from the light, smooth with hard steps.
+        const float a = zf / (zf - zn), b = -zn * zf / (zf - zn);
+        for (UINT y = 0; y < kShadowRes; ++y)
+            for (UINT x = 0; x < kShadowRes; ++x) {
+                float d = 5.0f + 3.0f * std::sin(x * 0.05f + seed) * std::cos(y * 0.04f);
+                if (((x / 40) + (y / 40)) % 3 == 0) d = 2.0f + 2.0f * u(rng);
+                shadow[y * kShadowRes + x] = a + b / d;
+            }
+        for (auto& v : projMap) v = 0.3f + 0.7f * u(rng);
+        g.UploadR32(tex[0], kW, kH, depth);
+        g.UploadR32(tex[1], kW, kH, normals, 4);
+        g.UploadR32(tex[2], kW, kH, tangent, 4);
+        g.UploadR32(tex[3], 4, 4, exposure);
+        g.UploadR32(tex[4], kShadowRes, kShadowRes, shadow);
+        g.UploadR32(tex[5], 64, 64, projMap, 4);
+        uint8_t* p = nullptr;
+        CHECKHR(cbuf->Map(0, nullptr, (void**)&p));
+        memcpy(p, cb.data(), cb.size());
+        cbuf->Unmap(0, nullptr);
+
+        std::vector<float> outA, outB;
+        render(psoA, outA);
+        render(psoB, outB);
+        size_t diff = 0, exact = 0, lit = 0;
+        float maxDiff[4] = {};
+        for (size_t i = 0; i < outA.size(); i += 4) {
+            bool same = true, any = false;
+            for (int c = 0; c < 4; ++c) {
+                float d = std::fabs(outA[i + c] - outB[i + c]);
+                maxDiff[c] = std::max(maxDiff[c], d);
+                same &= outA[i + c] == outB[i + c];
+                any |= d > 1e-4f * std::max(1.0f, std::fabs(outA[i + c]));
+            }
+            diff += any;
+            exact += same;
+            lit += outA[i] > 0.0f;
+        }
+        if (enhanced) {
+            size_t bad = 0, darker = 0;
+            double sumA = 0, sumB = 0;
+            for (size_t i = 0; i < outB.size(); i += 4) {
+                for (int c = 0; c < 4; ++c) bad += !(outB[i + c] >= 0.0f && outB[i + c] <= 32.0f);
+                sumA += outA[i];
+                sumB += outB[i];
+                darker += outB[i] < outA[i] - 1e-5f;
+            }
+            failures += bad != 0;
+            printf("seed %d: %s  red mean original %.4f, enhanced %.4f, darker %zu px, changed %zu px, invalid %zu\n",
+                   seed, bad ? "BAD " : "OK  ", sumA / (kW * kH), sumB / (kW * kH), darker, diff, bad);
+            if (seed == 1)
+                for (int k = 0; k < 2; ++k) {
+                    const std::vector<float>& img = k ? outB : outA;
+                    float peak = 1e-6f;
+                    for (size_t i = 0; i < img.size(); i += 4) peak = std::max(peak, img[i]);
+                    FILE* f = fopen(k ? "spot_b.pgm" : "spot_a.pgm", "wb");
+                    fprintf(f, "P5 %u %u 255\n", kW, kH);
+                    for (size_t i = 0; i < img.size(); i += 4) fputc((int)(std::min(img[i] / peak, 1.0f) * 255.0f), f);
+                    fclose(f);
+                }
+        } else {
+        bool ok = diff == 0;
+        failures += !ok;
+        printf("seed %d: %s  bit-exact %.2f%%  >1e-4: %zu px  max diff r=%.2g g=%.2g b=%.2g a=%.2g  (lit %zu px)\n",
+               seed, ok ? "OK  " : "DIFF", 100.0 * exact / (outA.size() / 4), diff, maxDiff[0], maxDiff[1],
+               maxDiff[2], maxDiff[3], lit);
+        }
+        // Back to COPY_DEST for the next seed's uploads.
+        D3D12_RESOURCE_BARRIER back[6] = {};
+        for (int i = 0; i < 6; ++i) {
+            back[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            back[i].Transition = {tex[i], 0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST};
+        }
+        g.Begin();
+        g.list->ResourceBarrier(6, back);
+        g.SubmitAndWait();
+    }
+    printf(failures ? "FAILED (%d seed(s))\n" : enhanced ? "ALL SEEDS VALID\n" : "ALL SEEDS MATCH\n", failures);
+    return failures ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc > 1 && !strcmp(argv[1], "--spot")) return RunSpot(argc - 1, argv + 1);
     bool flat = false;  // --hbao --flat: a flat wall facing the camera (AO must be ~1)
     bool blocks = false;
     bool corner = false;  // --hbao --corner: a back wall at 6 m meeting a side wall at x = -1.5 m

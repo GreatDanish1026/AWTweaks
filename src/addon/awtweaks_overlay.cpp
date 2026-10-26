@@ -503,6 +503,38 @@ void DrawAoFx(const AwtStatus& st) {
                         s.pipelinesReplaced, s.pipelinesMissed ? ", some missed - see ReShade.log" : "");
 }
 
+// Flashlight (and other shadowed spotlight) shadows, when [Shaders] SpotShader=Enhanced.
+void DrawFlashFx(const AwtStatus& st) {
+    shader_replace::Stats s = shader_replace::GetStats(shader_replace::Family::Spot);
+    ImGui::SeparatorText("Flashlight shadows");
+    if (s.mode == shader_replace::Mode::Original) {
+        ImGui::TextDisabled("Soft and contact shadows: set [Shaders] SpotShader=Enhanced in "
+                            "awtweaks.ini and restart the game.");
+        return;
+    }
+    if (s.mode == shader_replace::Mode::Debug)
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Debug test pattern on ([Shaders] SpotShader=Debug)");
+    ImGui::BeginDisabled(st.modOff || s.mode != shader_replace::Mode::Enhanced);
+    float soft = st.flashSoftness, contact = st.flashContact;
+    ImGui::SetNextItemWidth(AvailWidth() * 0.6f);
+    if (ImGui::SliderFloat("Flashlight softness", &soft, 0.0f, 6.0f, soft > 0.0f ? "lens %.1f cm" : "off (game's filter)",
+                           ImGuiSliderFlags_None))
+        g_api.set("AWTweaks:Flashlight Softness", &soft);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Shadows sharp where objects touch, softer the farther they fall, as from a lens\n"
+                          "this wide (radius). Also lamps that cast shadows. Ctrl+click to type a value.");
+    ImGui::SetNextItemWidth(AvailWidth() * 0.6f);
+    if (ImGui::SliderFloat("Flashlight contact shadows", &contact, 0.0f, 1.0f, contact > 0.0f ? "%.2f m" : "off",
+                           ImGuiSliderFlags_None))
+        g_api.set("AWTweaks:Flashlight Contact Shadows", &contact);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Small sharp shadows the shadow map misses, traced on screen up to this distance\n"
+                          "towards the light.");
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("%d of %d spotlight shaders replaced (%d pipelines)%s", s.variantsReplaced, s.variantsTotal,
+                        s.pipelinesReplaced, s.pipelinesMissed ? ", some missed - see ReShade.log" : "");
+}
+
 void DrawOverlay(reshade::api::effect_runtime*) {
     if (!ResolveApi()) {
         ImGui::TextWrapped("AWTweaks' xinput1_4.dll isn't loaded, so there is nothing to edit. "
@@ -527,6 +559,8 @@ void DrawOverlay(reshade::api::effect_runtime*) {
     DrawPhoto();
     ImGui::Spacing();
     DrawShadowFx(st);
+    ImGui::Spacing();
+    DrawFlashFx(st);
     ImGui::Spacing();
     DrawAoFx(st);
     ImGui::Spacing();

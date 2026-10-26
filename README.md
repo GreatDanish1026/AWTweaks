@@ -8,6 +8,9 @@ Graphics, lighting and photo-mode mod for **Alan Wake Remastered** (PC).
 - **Soft and contact shadows** (with the ReShade add-on) – sun and moon shadows
   soften the farther they fall from what casts them, and small contact shadows
   ground objects where they touch.
+- **Soft flashlight shadows** (with the ReShade add-on) – shadows from Alan's
+  flashlight and shadow-casting lamps are sharp where objects touch and soften
+  with distance, as from a real lens, instead of hard stair-stepped edges.
 - **Ground-truth ambient occlusion** (with the ReShade add-on) – GTAO in place
   of the game's HBAO+: deeper shading in corners and creases, none on open
   surfaces, and no dark halos around thin objects.
@@ -79,18 +82,21 @@ Every key can be changed in `awtweaks.ini`.
 | Shadow edge softness (cascade filter size) | 9 | 11 | 13 |
 | Soft shadows (sun size)\* | off | 0.5° | 1.0° |
 | Contact shadows\* | off | 0.3 m | 0.6 m |
+| Flashlight softness (lens radius)\* | off | 2 cm | 3 cm |
 | Skin light scattering | practically off | on | on |
 | Character lights at night (key / fill) | 0.31 / 0.31 | 0.5 / 0.1 | 0.5 / 0.1 |
 | **Frame-rate cost vs Stock** | – | **about 13%** | **about 19%** |
 
-\* Need the ReShade add-on. Adjust them with the *Sun and moon shadows* and
-*Ambient occlusion* sliders in the overlay.
+\* Need the ReShade add-on. Adjust them with the *Sun and moon shadows*,
+*Flashlight shadows* and *Ambient occlusion* sliders in the overlay.
 
 Costs were measured with the overlay's *Measure FPS of each* button on one
 scene (4K, paused, same view): Stock 147.5, Ultra+ 128, Cinematic 120 FPS.
 Without the soft and contact shadows the presets cost about 5% and 10%; GTAO
-costs too little to measure. Your numbers will vary with hardware and scene;
-run the same button to check yours.
+costs too little to measure. At night indoors with the flashlight on, where
+the sun shadows cost little, the presets cost about 3% and 8% (Stock 155.8,
+Ultra+ 150.5, Cinematic 143.5 FPS). Your numbers will vary with hardware and
+scene; run the same button to check yours.
 
 *Darker Nights* can be combined with any of them: less automatic brightening at
 night, no invisible light following Alan, dimmer fill lights on characters, and
@@ -121,9 +127,9 @@ itself is never modified on disk.
   idle" or "signature not found" means this game version isn't supported.
 - **Frame rate too low:** switch to Ultra+ (F9), turn down the soft and contact
   shadow sliders, or set `AtlasScale=1`.
-- **Shadows or ambient occlusion look wrong after a game update:** set
-  `ShadowShader=Original` or `AOShader=Original` under `[Shaders]` in
-  `awtweaks.ini` to use the game's own shader.
+- **Shadows, flashlight or ambient occlusion look wrong after a game update:**
+  set `ShadowShader`, `SpotShader` or `AOShader` to `Original` under
+  `[Shaders]` in `awtweaks.ini` to use the game's own shader.
 - **Out of video memory / stutter:** set `AtlasScale=1` under `[Shadows]`.
 - **Controller conflicts:** the mod passes all controller input through to the
   game; it only adds keyboard keys. Change any key in `awtweaks.ini`.

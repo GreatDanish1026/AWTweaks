@@ -3,6 +3,8 @@
 //    mask), from src/shaders/shadow_buffer.hlsl: rebuilt bit-identical, plus optional soft
 //    and contact shadows the main DLL switches on (see the .hlsl);
 //  - AO: HBAO.rfx "coarseAOPS" (NVIDIA HBAO+), from src/shaders/hbao_coarse.hlsl;
+//  - spot: DeferredLight.rfx "spotlightPS" with shadow and projection maps (every
+//    shadow-casting spotlight, the flashlight among them), from deferred_spotlight.hlsl;
 //  - SSS: SSSSS.rfx "sss_blurPS" (skin subsurface scattering), so far only a diagnostic
 //    view from src/shaders/sss_debug.hlsl.
 // ReShade reports every pipeline the game creates; when its pixel shader is one of the
@@ -21,6 +23,7 @@
 
 #include "../shaders/hbao_blobs.h"
 #include "../shaders/shadow_buffer_blobs.h"
+#include "../shaders/spotlight_blobs.h"
 #include "../shaders/sss_blobs.h"
 #include "shader_replace.h"
 
@@ -67,6 +70,12 @@ const Variant kAoVariants[] = {
      18527, kAoDir8, sizeof(kAoDir8), kAoDir8Debug, sizeof(kAoDir8Debug)},
 };
 
+const Variant kSpotVariants[] = {
+    {"shadow + projection map",
+     {0xfe, 0x25, 0xe2, 0x68, 0x21, 0x2b, 0x0d, 0x27, 0xfa, 0x73, 0x53, 0x28, 0x0c, 0x90, 0x0b, 0x51},
+     11615, kSpotProj, sizeof(kSpotProj), kSpotProjDebug, sizeof(kSpotProjDebug)},
+};
+
 const Variant kSssVariants[] = {
     {"blur",
      {0x98, 0x2a, 0x42, 0x4e, 0x05, 0x89, 0x0f, 0x5b, 0xec, 0xdd, 0xaf, 0x64, 0x08, 0xe6, 0x9b, 0xb6},
@@ -88,6 +97,7 @@ FamilyState g_families[] = {
     {"shadow", L"ShadowShader", kShadowVariants, sizeof(kShadowVariants) / sizeof(Variant)},
     {"AO", L"AOShader", kAoVariants, sizeof(kAoVariants) / sizeof(Variant)},
     {"SSS", L"SSSShader", kSssVariants, sizeof(kSssVariants) / sizeof(Variant)},
+    {"spotlight", L"SpotShader", kSpotVariants, sizeof(kSpotVariants) / sizeof(Variant)},
 };
 constexpr int kNumFamilies = sizeof(g_families) / sizeof(g_families[0]);
 bool g_registered = false;

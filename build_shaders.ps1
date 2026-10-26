@@ -60,5 +60,12 @@ foreach ($dirs in 4, 6, 8) {
 }
 Build-Header 'hbao_coarse.hlsl' 'hbao_blobs.h' $hbao
 
+# Shadowed spotlights (the flashlight among them): DeferredLight spotlightPS with a
+# shadow map and projection map; enhanced (soft and contact shadows on request, else the
+# original code).
+Build-Header 'deferred_spotlight.hlsl' 'spotlight_blobs.h' @(
+    @('SpotProj', @('ENHANCED=1', 'DEBUG_STRIPES=0')),
+    @('SpotProjDebug', @('ENHANCED=1', 'DEBUG_STRIPES=1')))
+
 # Skin subsurface scattering blur: a diagnostic only, so far.
 Build-Header 'sss_debug.hlsl' 'sss_blobs.h' @(, @('SssDebug', @('DEBUG_STRIPES=1')))

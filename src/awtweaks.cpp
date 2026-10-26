@@ -1121,6 +1121,8 @@ std::unordered_map<std::string, std::string> g_presetOf;    // name -> preset th
 std::vector<std::string> g_activePresets;
 float g_sunSize = 0.0f, g_contactShadows = 0.0f;  // effective shadow-shader settings
 float g_gtao = 0.0f;                               // effective AO-shader setting
+float g_flashSoftness = 0.0f, g_flashContact = 0.0f;  // effective spotlight-shader settings
+int g_flashFxSource = 0;
 int g_aoFxSource = 0;
 int g_shadowFxSource = kSrcNone;
 Config g_baseShared;  // last loaded ini, for preset metadata (names/groups/descriptions)
@@ -1213,11 +1215,26 @@ float g_stockAoBias = 0.1f;  // the engine's value, noted when it registers
 
 bool IsAoFxName(const std::string& name) { return Lower(name) == Lower(kGtaoName); }
 
+// Same for the spotlight shader ([Shaders] SpotShader=Enhanced): "AWTweaks:Flashlight
+// Softness" (lens radius, cm) and "AWTweaks:Flashlight Contact Shadows" (m) ride in
+// "Shadow Filtering d3t:Filter Size", which the spotlight pass reads (and the material
+// shaders, for which the extra digits make no difference).
+const char* const kFlashSoftnessName = "AWTweaks:Flashlight Softness";
+const char* const kFlashContactName = "AWTweaks:Flashlight Contact Shadows";
+const char* const kSpotCarrierName = "Shadow Filtering d3t:Filter Size";
+float g_stockFilterSize = 5.0f;  // the engine's value, noted when it registers
+
+bool IsFlashFxName(const std::string& name) {
+    return Lower(name) == Lower(kFlashSoftnessName) || Lower(name) == Lower(kFlashContactName);
+}
+
 // Every AWTweaks-only setting: never an engine tweakable, packed on re-derive.
 const char* PseudoName(const std::string& name) {
     if (Lower(name) == Lower(kSunSizeName)) return kSunSizeName;
     if (Lower(name) == Lower(kContactShadowsName)) return kContactShadowsName;
     if (IsAoFxName(name)) return kGtaoName;
+    if (Lower(name) == Lower(kFlashSoftnessName)) return kFlashSoftnessName;
+    if (Lower(name) == Lower(kFlashContactName)) return kFlashContactName;
     return nullptr;
 }
 
@@ -1305,6 +1322,47 @@ void DeriveShadowFx(Config& cfg) {
     if (g_sourceOf[kPackedName] < g_shadowFxSource) g_sourceOf[kPackedName] = g_shadowFxSource;
 }
 
+// Filter size rounded to 0.1, plus 0.00001 * (1 + lens radius in 0.2 cm steps * 100
+// + contact length in 2 cm steps); see src/shaders/deferred_spotlight.hlsl.
+float PackFlashFx(float filterSize, float lensCm, float contactMetres) {
+    int lens = (int)std::lround(std::clamp(lensCm, 0.0f, 9.8f) / 0.2f);
+    int contact = (int)std::lround(std::clamp(contactMetres, 0.0f, 1.98f) / 0.02f);
+    double size = std::floor(std::clamp(filterSize, 1.0f, 16.0f) * 10.0 + 0.5) / 10.0;
+    return (float)(size + (1 + lens * 100 + contact) * 0.00001);
+}
+
+// Moves the two flashlight settings out of cfg into the "Filter Size" override, on top
+// of whatever size is set or stock. Lock held.
+void DeriveFlashFx(Config& cfg) {
+    g_flashSoftness = g_flashContact = 0.0f;
+    g_flashFxSource = kSrcNone;
+    auto sized = cfg.tweaks.find(kSpotCarrierName);
+    if (sized != cfg.tweaks.end() && sized->second.count) sized->second.f[0] = RoundFilterSize(sized->second.f[0]);
+    for (auto it = cfg.tweaks.begin(); it != cfg.tweaks.end();) {
+        if (!IsFlashFxName(it->first)) {
+            ++it;
+            continue;
+        }
+        float v = it->second.count ? (std::max)(0.0f, it->second.f[0]) : 0.0f;
+        (Lower(it->first) == Lower(kFlashSoftnessName) ? g_flashSoftness : g_flashContact) = v;
+        g_flashFxSource = (std::max)(g_flashFxSource, g_sourceOf[it->first]);
+        it = cfg.tweaks.erase(it);
+    }
+    if (g_flashSoftness <= 0.0f && g_flashContact <= 0.0f) return;
+    float size = g_stockFilterSize;
+    auto set = cfg.tweaks.find(kSpotCarrierName);
+    if (set != cfg.tweaks.end() && set->second.count) size = set->second.f[0];
+    Override o;
+    o.f[0] = PackFlashFx(size, g_flashSoftness, g_flashContact);
+    o.count = 1;
+    o.noClamp = true;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.5f", o.f[0]);
+    o.raw = buf;
+    cfg.tweaks[kSpotCarrierName] = o;
+    if (g_sourceOf[kSpotCarrierName] < g_flashFxSource) g_sourceOf[kSpotCarrierName] = g_flashFxSource;
+}
+
 // What actually gets applied: [Tweaks], the active presets on top (file order),
 // then overlay edits; nothing at all while the mod is toggled off. Lock held.
 Config Derive(const Config& base) {
@@ -1329,6 +1387,7 @@ Config Derive(const Config& base) {
     }
     DeriveShadowFx(cfg);
     DeriveAoFx(cfg);
+    DeriveFlashFx(cfg);
     for (auto& [name, o] : cfg.tweaks)
         if (IsCascadeResolution(name) && o.count) o.f[0] = SafeCascadeResolution(name, o.f[0]);
     if (g_modOff) cfg.enabled = false;
@@ -1805,6 +1864,7 @@ DWORD WINAPI Worker(LPVOID) {
             else memcpy(k.original, obj + kOffValue, sizeof(k.original));
             if (k.type == kFloat && k.name == kPackedName) memcpy(&g_stockCascadeFilterSize, k.original, 4);
             if (k.type == kFloat && k.name == kAoCarrierName) memcpy(&g_stockAoBias, k.original, 4);
+            if (k.type == kFloat && k.name == kSpotCarrierName) memcpy(&g_stockFilterSize, k.original, 4);
             g_knownIndex[k.name] = known.size();
             known.push_back(std::move(k));
             fresh.push_back(known.size() - 1);
@@ -2011,6 +2071,9 @@ extern "C" int __cdecl AWT_GetStatus(AwtStatus* out) {
     out->aoFxSource = g_modOff ? AWT_SRC_NONE : g_aoFxSource;
     out->contactShadows = g_contactShadows;
     out->shadowFxSource = g_modOff ? AWT_SRC_NONE : g_shadowFxSource;
+    out->flashSoftness = g_flashSoftness;
+    out->flashContact = g_flashContact;
+    out->flashFxSource = g_modOff ? AWT_SRC_NONE : g_flashFxSource;
     ReleaseSRWLockShared(&g_knownLock);
     return 1;
 }
@@ -2089,6 +2152,7 @@ extern "C" int __cdecl AWT_Set(const char* name, const float* v) {
         if (k.type == kFloat) o.f[0] = SafeCascadeResolution(k.name, o.f[0]);
         if (k.type == kFloat && k.name == kPackedName) o.f[0] = RoundFilterSize(o.f[0]);
         if (k.type == kFloat && k.name == kAoCarrierName) o.f[0] = RoundAoBias(o.f[0]);
+        if (k.type == kFloat && k.name == kSpotCarrierName) o.f[0] = RoundFilterSize(o.f[0]);
         o.raw = FormatValue(&k, k.type, o.f);
         if (k.type == kBool || k.type == kFloat || k.type == kColor || k.type == kList) {
             g_ui[k.name] = o;

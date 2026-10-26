@@ -4,7 +4,7 @@
 namespace shader_replace {
 
 enum class Mode { Original, Enhanced, Debug };
-enum class Family { Shadow = 0, AO = 1, SSS = 2 };  // [Shaders] ShadowShader, AOShader, SSSShader
+enum class Family { Shadow = 0, AO = 1, SSS = 2, Spot = 3 };  // [Shaders] ShadowShader, AOShader, SSSShader, SpotShader
 
 struct Stats {
     Mode mode;
