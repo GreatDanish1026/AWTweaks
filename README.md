@@ -1,6 +1,7 @@
 # AWTweaks 1.2.0
 
-Graphics, lighting and photo-mode mod for **Alan Wake Remastered** (PC).
+Graphics, lighting and photo-mode mod for **Alan Wake Remastered** (PC, Epic
+Games Store version only; not the original Alan Wake on Steam).
 
 - **Sharper, fuller shadows** – sun and moon shadow cascades up to 4096
   (4× the detail of Ultra), every object casting shadows in the distance,
@@ -11,6 +12,9 @@ Graphics, lighting and photo-mode mod for **Alan Wake Remastered** (PC).
 - **Soft flashlight shadows** (with the ReShade add-on) – shadows from Alan's
   flashlight and shadow-casting lamps are sharp where objects touch and soften
   with distance, as from a real lens, instead of hard stair-stepped edges.
+- **Steadier flashlight beams** (with the ReShade add-on) – light beams in the
+  air get filtered shadows and more steps where they cross shadow detail, so
+  shafts through blinds and branches flicker less.
 - **Ground-truth ambient occlusion** (with the ReShade add-on) – GTAO in place
   of the game's HBAO+: deeper shading in corners and creases, none on open
   surfaces, and no dark halos around thin objects.
@@ -28,8 +32,10 @@ Graphics, lighting and photo-mode mod for **Alan Wake Remastered** (PC).
 ## Requirements
 
 - Alan Wake Remastered for PC, **Epic Games Store version** (game build 34885).
-  Other versions (e.g. Steam) are untested: if the mod doesn't recognise the
-  game it does nothing and says so in `awtweaks.log`.
+  This is the only version the mod works with. It does **not** work with the
+  original Alan Wake (2010/2012) on Steam, which is a different engine build.
+  If the mod doesn't recognise the game it does nothing and says so in
+  `awtweaks.log`.
 - Windows 10 or 11, 64-bit.
 - About 1 GB of extra video memory for the larger shadow maps (can be turned off).
 - Optional: [ReShade](https://reshade.me) 6.8 or newer, **"with full add-on
@@ -85,17 +91,20 @@ Every key can be changed in `awtweaks.ini`.
 | Soft shadows (sun size)\* | off | 0.5° | 1.0° |
 | Contact shadows\* | off | 0.3 m | 0.6 m |
 | Flashlight softness (lens radius)\* | off | 2 cm | 3 cm |
+| Beam quality\* | off | 1 | 2 |
 | Skin light scattering | practically off | on | on |
 | Character lights at night (key / fill) | 0.31 / 0.31 | 0.5 / 0.1 | 0.5 / 0.1 |
-| **Frame-rate cost vs Stock** | – | **about 13%** | **about 19%** |
+| **Frame-rate cost vs Stock** | – | **about 16%** | **about 22%** |
 
 \* Need the ReShade add-on. Adjust them with the *Sun and moon shadows*,
-*Flashlight shadows* and *Ambient occlusion* sliders in the overlay.
+*Flashlight shadows*, *Flashlight beams* and *Ambient occlusion* sliders in the overlay.
 
-Costs were measured with the overlay's *Measure FPS of each* button on one
-scene (4K, paused, same view): Stock 147.5, Ultra+ 128, Cinematic 120 FPS.
-Without the soft and contact shadows the presets cost about 5% and 10%; GTAO
-costs too little to measure. Your numbers will vary with hardware and scene;
+Costs were measured with the overlay's *Measure FPS of each* button (4K,
+paused, same view), with `VolumetricShader=Enhanced`: Stock 148.2, Ultra+ 124.0,
+Cinematic 115.1 FPS. Beam quality accounts for about 0.25 ms of that at 1 and
+0.35 ms at 2 (an earlier run without it: Ultra+ 128, Cinematic 120). Without the
+soft and contact shadows the presets cost about 5% and 10%; GTAO costs too
+little to measure. Your numbers will vary with hardware and scene;
 run the same button to check yours.
 
 *Darker Nights* can be combined with any of them: less automatic brightening at

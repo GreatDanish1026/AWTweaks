@@ -3,7 +3,7 @@
 #pragma once
 #include <cstdint>
 
-#define AWT_API_VERSION 8
+#define AWT_API_VERSION 9
 
 enum AwtType : int32_t { AWT_BOOL = 0, AWT_FLOAT = 1, AWT_COLOR = 3, AWT_LIST = 5 };  // others: read-only
 enum AwtSource : int32_t { AWT_SRC_NONE = 0, AWT_SRC_TWEAKS = 1, AWT_SRC_PRESET = 2, AWT_SRC_OVERLAY = 3 };
@@ -38,6 +38,10 @@ struct AwtStatus {
     float flashSoftness;     // lens radius, cm; 0 = the game's filter
     float flashContact;      // metres, 0 = off
     int32_t flashFxSource;
+    // v9: AWTweaks spotlight beam shader setting (AWT_Set("AWTweaks:Beam Quality"): 0 = the
+    // game's march .. 3; takes effect with [Shaders] VolumetricShader=Enhanced).
+    float beamQuality;
+    int32_t beamFxSource;
 };
 
 // v3: photo mode.

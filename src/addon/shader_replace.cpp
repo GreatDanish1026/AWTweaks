@@ -6,7 +6,9 @@
 //  - spot: DeferredLight.rfx "spotlightPS" with shadow and projection maps (every
 //    shadow-casting spotlight, the flashlight among them), from deferred_spotlight.hlsl;
 //  - SSS: SSSSS.rfx "sss_blurPS" (skin subsurface scattering), so far only a diagnostic
-//    view from src/shaders/sss_debug.hlsl.
+//    view from src/shaders/sss_debug.hlsl;
+//  - volumetric: VolumetricLight.rfx "volumetric_light" #15 (shadowed spotlight beams,
+//    the flashlight's among them), from volumetric_light.hlsl: rebuilt bit-identical.
 // ReShade reports every pipeline the game creates; when its pixel shader is one of the
 // originals (matched by the DXBC container digest and size) we swap in ours.
 // Each family's mode comes from awtweaks.ini [Shaders], read at game start.
@@ -25,6 +27,7 @@
 #include "../shaders/shadow_buffer_blobs.h"
 #include "../shaders/spotlight_blobs.h"
 #include "../shaders/sss_blobs.h"
+#include "../shaders/volumetric_blobs.h"
 #include "shader_replace.h"
 
 namespace shader_replace {
@@ -82,6 +85,12 @@ const Variant kSssVariants[] = {
      10239, nullptr, 0, kSssDebug, sizeof(kSssDebug)},
 };
 
+const Variant kVolumetricVariants[] = {
+    {"shadowed beam",
+     {0x4c, 0xed, 0xe2, 0x99, 0x18, 0x4f, 0xa6, 0x9e, 0xda, 0xb0, 0x07, 0xab, 0xf6, 0x18, 0x05, 0x8a},
+     40320, kVolBeam, sizeof(kVolBeam), kVolBeamDebug, sizeof(kVolBeamDebug)},
+};
+
 struct FamilyState {
     const char* label;      // for the log
     const wchar_t* iniKey;  // [Shaders] key
@@ -98,6 +107,7 @@ FamilyState g_families[] = {
     {"AO", L"AOShader", kAoVariants, sizeof(kAoVariants) / sizeof(Variant)},
     {"SSS", L"SSSShader", kSssVariants, sizeof(kSssVariants) / sizeof(Variant)},
     {"spotlight", L"SpotShader", kSpotVariants, sizeof(kSpotVariants) / sizeof(Variant)},
+    {"beam", L"VolumetricShader", kVolumetricVariants, sizeof(kVolumetricVariants) / sizeof(Variant)},
 };
 constexpr int kNumFamilies = sizeof(g_families) / sizeof(g_families[0]);
 bool g_registered = false;

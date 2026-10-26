@@ -1,5 +1,7 @@
 # Compiles src\shaders\*.hlsl into the headers the add-on embeds:
-#   shadow_buffer.hlsl -> shadow_buffer_blobs.h, hbao_coarse.hlsl -> hbao_blobs.h.
+#   shadow_buffer.hlsl -> shadow_buffer_blobs.h, hbao_coarse.hlsl -> hbao_blobs.h,
+#   deferred_spotlight.hlsl -> spotlight_blobs.h, volumetric_light.hlsl -> volumetric_blobs.h,
+#   sss_debug.hlsl -> sss_blobs.h.
 # Needs the Windows SDK's dxc.exe (with dxil.dll beside it, so the blobs are signed).
 # The generated headers are committed, so build.ps1 works without the SDK.
 $ErrorActionPreference = 'Stop'
@@ -66,6 +68,12 @@ Build-Header 'hbao_coarse.hlsl' 'hbao_blobs.h' $hbao
 Build-Header 'deferred_spotlight.hlsl' 'spotlight_blobs.h' @(
     @('SpotProj', @('ENHANCED=1', 'DEBUG_STRIPES=0')),
     @('SpotProjDebug', @('ENHANCED=1', 'DEBUG_STRIPES=1')))
+
+# Spotlight beams: VolumetricLight "volumetric_light" #15, the shadowed 128-step ray march;
+# enhanced (filtered shadows and adaptive steps on request, else the original code).
+Build-Header 'volumetric_light.hlsl' 'volumetric_blobs.h' @(
+    @('VolBeam', @('ENHANCED=1', 'DEBUG_STRIPES=0')),
+    @('VolBeamDebug', @('ENHANCED=1', 'DEBUG_STRIPES=1')))
 
 # Skin subsurface scattering blur: a diagnostic only, so far.
 Build-Header 'sss_debug.hlsl' 'sss_blobs.h' @(, @('SssDebug', @('DEBUG_STRIPES=1')))

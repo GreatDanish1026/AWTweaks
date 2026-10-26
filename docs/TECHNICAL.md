@@ -313,14 +313,72 @@ walls, and they dim a highlight at a depth edge. So the presets use softness
 measured on its own: the night benchmarks so far hit a frame-rate cap (Stock
 read 155-156 FPS in every scene).
 
-### Flashlight beams (not changed yet)
+### Flashlight beams (`[Shaders] VolumetricShader`)
 Spotlight beams are `VolumetricLight.shaderbin` "volumetric_light": a half-res
 ray march with four shadowed quality tiers (about 21, 29, 45 and 141 texture
 reads), then a blur and a temporal pass. `[Debug] WatchShaders` showed the
 game already draws the densest tier (#15, 40 KB), with #17 (shadow-map pass),
-#23 (blur) and #25 (light texture). There is no cheaper tier to swap out, so
-better beams mean rebuilding #15 (e.g. at full resolution). Sun shafts are
-`VolumetricLighting_d3t` "raymarchSunlight" and god rays `Godray` "raymarch".
+#23 (blur) and #25 (light texture). Sun shafts are `VolumetricLighting_d3t`
+"raymarchSunlight" and god rays `Godray` "raymarch".
+
+#15, per half-res pixel:
+- intersects the view ray with the light's cone in "cone space" (`g_mViewToCone`:
+  apex at the light, x² + y² = z², capped at `g_fNearPlaneCap` and z = 1) and
+  clips the segment to the scene (half-res linear depth / ray z);
+- marches it in a fixed 128 steps (fully unrolled), whatever its length, at
+  t = (i + 0.5 + jitter.z) / 128;
+- per step, one point `SampleLevel` of the light's shadow map and a binary
+  compare (`z <= map`): no PCF, so each step is fully lit or fully dark;
+- weights each step by exp(−`g_fLightDecay` × distance along the light's axis);
+- scales the sum by segment length / 128, a Henyey-Greenstein phase
+  (`g_vHGConstants`, pow 1.5), `g_vLightIntensity` and exposure; clamps to 32,
+  × 0.15; alpha = `g_fTemporalBlur`.
+- Jitter: a 32×32 texture tiled over the output (`g_vOutputRes`, offset per frame
+  by `g_vVolumetricLightJitterOffset`): z offsets the steps, xy the shadow lookups
+  (× `g_vJitter`, in shadow-map units). The blur and temporal passes smooth it.
+- No cookie: `g_vCookieOffset` and `g_vShadowMapOffset` are declared but unread.
+
+`src/shaders/volumetric_light.hlsl` rebuilds it bit for bit. Two products had to
+be kept in the original's order without `precise` (DXC spreads it over the whole
+march, and that changes other steps): `max(x, −FLT_MAX)` blocks the regrouping.
+`shader_compare --volumetric` (with `test/volumetric_vs.hlsl`) feeds depth,
+exposure, a shadow map and a jitter map, with a flashlight at the camera or a
+lamp off to the side: 100% of pixels match on 30 seeds.
+`VolumetricShader=Debug` blanks the beams' colour in 32-px stripes (alpha kept),
+128 px while the settings arrive. Default `Enhanced`: in game, Debug showed the
+128-px stripes, so the setting arrives through Jitter Z unscaled.
+
+Enhanced (`AWTweaks:Beam Quality` q, 0.1–3):
+- **Filtered shadows.** Each step gathers the 2×2 shadow texels a bilinear fetch
+  would blend, compares each and blends the results (bilinear PCF). `s2` is a plain
+  sampler, so `Gather` stands in for a comparison sampler. The stock single compare
+  makes every step fully lit or dark, so shafts step and sparkle.
+- **Adaptive step count.** 0.75 steps per shadow texel the segment crosses (from
+  its ends projected into the shadow map; size by `GetDimensions`, since #15
+  doesn't read `g_vShadowMapRes`), clamped to 48q … 32 + 128q. Steps stay evenly
+  spaced along the ray: spacing them evenly in shadow-map space (weighted by the
+  Jacobian) flickered more in tests.
+- **Falloff as a running product.** exp(−decay × distance) with distance linear in
+  t: the first weight and a per-step ratio, one multiply per step instead of an
+  `exp2`.
+
+`shader_compare --volumetric ... <seeds> <code>` (code = q × 10) renders 16 frames
+with the jitter texture at different offsets, as the game moves it, and compares
+with the original's 16-frame average. Its shadow map adds slanted bars 2–4 texels
+wide (blinds, branches). Over 10 seeds, frame-to-frame flicker falls about 25% at
+q 1 (≈ 140 steps on average vs the stock 128) and about 40% at q 2 (≈ 220 steps);
+brightness stays the same (ratio 1.000), bias under 0.5%. Beyond 2 it improves
+little. WARP takes 1.6× (q 1) and 2.6× (q 2) as long as the original, but WARP runs
+on the CPU, where the filter's arithmetic costs more than on a GPU. In game (4K,
+paused, same view, *Measure FPS of each*): Stock 148.2, Ultra+ 124.0 (q 1),
+Cinematic 115.1 FPS (q 2), against 147.5 / 128.0 / 120.0 before the beam change:
+about 0.25 ms at q 1 and 0.35 ms at q 2.
+
+Settings channel: the DLL rounds `Volumetric Light:Jitter Z` (stock 0.4, the
+step-jitter amount; #15 reads it as `g_vJitter.z`) to 0.01 and adds 0.000001 × q × 10.
+The shader only accepts a clean code (1–30, within 0.25 of an integer), so if the
+engine scaled the value on its way to the shader it stays stock, and Debug stripes
+stay 32 px wide. API v9 reports the effective quality. Presets: Ultra+ 1, Cinematic 2.
 
 ### Skin and faces
 Characters' skin is `Skin_d3t.shaderbin` (the older `Skin.shaderbin` is never

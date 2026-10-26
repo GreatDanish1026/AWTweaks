@@ -1123,6 +1123,8 @@ float g_sunSize = 0.0f, g_contactShadows = 0.0f;  // effective shadow-shader set
 float g_gtao = 0.0f;                               // effective AO-shader setting
 float g_flashSoftness = 0.0f, g_flashContact = 0.0f;  // effective spotlight-shader settings
 int g_flashFxSource = 0;
+float g_beamQuality = 0.0f;  // effective beam-shader setting
+int g_beamFxSource = 0;
 int g_aoFxSource = 0;
 int g_shadowFxSource = kSrcNone;
 Config g_baseShared;  // last loaded ini, for preset metadata (names/groups/descriptions)
@@ -1228,6 +1230,16 @@ bool IsFlashFxName(const std::string& name) {
     return Lower(name) == Lower(kFlashSoftnessName) || Lower(name) == Lower(kFlashContactName);
 }
 
+// Same for the spotlight beam shader ([Shaders] VolumetricShader=Enhanced): "AWTweaks:Beam
+// Quality" (0 = the game's march .. 3) rides in "Volumetric Light:Jitter Z" (the beam
+// march's step jitter, read by that pass): rounded to 0.01 + code * 0.000001, code =
+// quality in 0.1 steps; see src/shaders/volumetric_light.hlsl DecodeSettings.
+const char* const kBeamQualityName = "AWTweaks:Beam Quality";
+const char* const kBeamCarrierName = "Volumetric Light:Jitter Z";
+float g_stockJitterZ = 0.4f;  // the engine's value, noted when it registers
+
+bool IsBeamFxName(const std::string& name) { return Lower(name) == Lower(kBeamQualityName); }
+
 // Every AWTweaks-only setting: never an engine tweakable, packed on re-derive.
 const char* PseudoName(const std::string& name) {
     if (Lower(name) == Lower(kSunSizeName)) return kSunSizeName;
@@ -1235,6 +1247,7 @@ const char* PseudoName(const std::string& name) {
     if (IsAoFxName(name)) return kGtaoName;
     if (Lower(name) == Lower(kFlashSoftnessName)) return kFlashSoftnessName;
     if (Lower(name) == Lower(kFlashContactName)) return kFlashContactName;
+    if (IsBeamFxName(name)) return kBeamQualityName;
     return nullptr;
 }
 
@@ -1363,6 +1376,46 @@ void DeriveFlashFx(Config& cfg) {
     if (g_sourceOf[kSpotCarrierName] < g_flashFxSource) g_sourceOf[kSpotCarrierName] = g_flashFxSource;
 }
 
+float RoundJitterZ(float v) { return (float)(std::floor(std::clamp(v, 0.0f, 1.0f) * 100.0 + 0.5) / 100.0); }
+
+float PackBeamFx(float jitterZ, float quality) {
+    int code = (int)std::lround(std::clamp(quality, 0.0f, 3.0f) * 10.0f);
+    return (float)(RoundJitterZ(jitterZ) + code * 0.000001);
+}
+
+// Moves "AWTweaks:Beam Quality" out of cfg into the "Jitter Z" override, on top of
+// whatever jitter is set or stock. Lock held.
+void DeriveBeamFx(Config& cfg) {
+    g_beamQuality = 0.0f;
+    g_beamFxSource = kSrcNone;
+    auto jittered = cfg.tweaks.find(kBeamCarrierName);
+    if (jittered != cfg.tweaks.end() && jittered->second.count)
+        jittered->second.f[0] = RoundJitterZ(jittered->second.f[0]);
+    for (auto it = cfg.tweaks.begin(); it != cfg.tweaks.end();) {
+        if (!IsBeamFxName(it->first)) {
+            ++it;
+            continue;
+        }
+        const Override& o = it->second;
+        g_beamQuality = o.isBool ? (o.b ? 1.0f : 0.0f) : (o.count ? std::clamp(o.f[0], 0.0f, 3.0f) : 0.0f);
+        g_beamFxSource = (std::max)(g_beamFxSource, g_sourceOf[it->first]);
+        it = cfg.tweaks.erase(it);
+    }
+    if (g_beamQuality < 0.05f) return;  // rounds to code 0
+    float jitterZ = g_stockJitterZ;
+    auto set = cfg.tweaks.find(kBeamCarrierName);
+    if (set != cfg.tweaks.end() && set->second.count) jitterZ = set->second.f[0];
+    Override o;
+    o.f[0] = PackBeamFx(jitterZ, g_beamQuality);
+    o.count = 1;
+    o.noClamp = true;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.6f", o.f[0]);
+    o.raw = buf;
+    cfg.tweaks[kBeamCarrierName] = o;
+    if (g_sourceOf[kBeamCarrierName] < g_beamFxSource) g_sourceOf[kBeamCarrierName] = g_beamFxSource;
+}
+
 // What actually gets applied: [Tweaks], the active presets on top (file order),
 // then overlay edits; nothing at all while the mod is toggled off. Lock held.
 Config Derive(const Config& base) {
@@ -1388,6 +1441,7 @@ Config Derive(const Config& base) {
     DeriveShadowFx(cfg);
     DeriveAoFx(cfg);
     DeriveFlashFx(cfg);
+    DeriveBeamFx(cfg);
     for (auto& [name, o] : cfg.tweaks)
         if (IsCascadeResolution(name) && o.count) o.f[0] = SafeCascadeResolution(name, o.f[0]);
     if (g_modOff) cfg.enabled = false;
@@ -1865,6 +1919,7 @@ DWORD WINAPI Worker(LPVOID) {
             if (k.type == kFloat && k.name == kPackedName) memcpy(&g_stockCascadeFilterSize, k.original, 4);
             if (k.type == kFloat && k.name == kAoCarrierName) memcpy(&g_stockAoBias, k.original, 4);
             if (k.type == kFloat && k.name == kSpotCarrierName) memcpy(&g_stockFilterSize, k.original, 4);
+            if (k.type == kFloat && k.name == kBeamCarrierName) memcpy(&g_stockJitterZ, k.original, 4);
             g_knownIndex[k.name] = known.size();
             known.push_back(std::move(k));
             fresh.push_back(known.size() - 1);
@@ -2074,6 +2129,8 @@ extern "C" int __cdecl AWT_GetStatus(AwtStatus* out) {
     out->flashSoftness = g_flashSoftness;
     out->flashContact = g_flashContact;
     out->flashFxSource = g_modOff ? AWT_SRC_NONE : g_flashFxSource;
+    out->beamQuality = g_beamQuality;
+    out->beamFxSource = g_modOff ? AWT_SRC_NONE : g_beamFxSource;
     ReleaseSRWLockShared(&g_knownLock);
     return 1;
 }
@@ -2153,6 +2210,7 @@ extern "C" int __cdecl AWT_Set(const char* name, const float* v) {
         if (k.type == kFloat && k.name == kPackedName) o.f[0] = RoundFilterSize(o.f[0]);
         if (k.type == kFloat && k.name == kAoCarrierName) o.f[0] = RoundAoBias(o.f[0]);
         if (k.type == kFloat && k.name == kSpotCarrierName) o.f[0] = RoundFilterSize(o.f[0]);
+        if (k.type == kFloat && k.name == kBeamCarrierName) o.f[0] = RoundJitterZ(o.f[0]);
         o.raw = FormatValue(&k, k.type, o.f);
         if (k.type == kBool || k.type == kFloat || k.type == kColor || k.type == kList) {
             g_ui[k.name] = o;

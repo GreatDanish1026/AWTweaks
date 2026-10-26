@@ -512,6 +512,17 @@ void DrawLighting(const AwtStatus& st) {
                      {"AWTweaks:Flashlight Softness", "AWTweaks:Flashlight Contact Shadows"});
     }
     ImGui::Spacing();
+    if (EffectHeader("Flashlight beams", Family::Volumetric, "VolumetricShader", "beam")) {
+        ImGui::BeginDisabled(st.modOff ||
+                             shader_replace::GetStats(Family::Volumetric).mode != shader_replace::Mode::Enhanced);
+        EffectSlider("Beam quality", "AWTweaks:Beam Quality", st.beamQuality, 3.0f, "%.1f", "off (game's beams)",
+                     "Light beams in the air (the flashlight, some lamps): filtered shadows in the beam\n"
+                     "and more steps where it crosses more shadow detail, so shafts flicker less.\n"
+                     "1 costs about the same as the game's beams, 2 about 1.7x.");
+        ImGui::EndDisabled();
+        EffectFooter(st, Family::Volumetric, st.beamFxSource, "beam", {"AWTweaks:Beam Quality"});
+    }
+    ImGui::Spacing();
     if (EffectHeader("Ambient occlusion", Family::AO, "AOShader", "AO")) {
         ImGui::BeginDisabled(st.modOff || shader_replace::GetStats(Family::AO).mode != shader_replace::Mode::Enhanced);
         EffectSlider("GTAO", "AWTweaks:GTAO", st.gtao, 3.0f, "strength %.1f", "off (game's HBAO+)",
