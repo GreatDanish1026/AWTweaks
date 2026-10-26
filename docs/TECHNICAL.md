@@ -82,14 +82,21 @@ per-control call counts and peaks every 2 s.
 `bin\AWTweaks.addon64` is a ReShade add-on (needs ReShade 6.8+ *with full add-on
 support*). Copy it next to the game; open ReShade (Home) → **AWTweaks** tab:
 
-- **Top (everyday):** Mod enabled switch, **Quality** presets as radio buttons
-  (Stock / Ultra+ / Cinematic), **Look** presets as checkboxes (Darker Nights),
-  each with its description, and *Use these presets at startup* (rewrites
-  `Preset=`).
-- **Advanced (collapsed):** every registered tweakable grouped by category, with
-  sliders / checkboxes / colour pickers, a filter, "Only changed", per-item undo,
-  and **Save to awtweaks.ini** (written in place into `[Tweaks]`, or into the
-  preset section that set the value). Hover a row for its stock value.
+- **Header, on every tab:** Mod enabled switch, version and active presets, and
+  a bar counting unsaved overlay edits with **Save to awtweaks.ini** (written in
+  place into `[Tweaks]`, or into the preset section that set the value) and
+  **Undo all**.
+- **Presets:** **Quality** presets as radio buttons (Stock / Ultra+ /
+  Cinematic), **Look** presets as checkboxes (Darker Nights), each with its
+  description, and *Start the game with ...* (rewrites `Preset=`).
+- **Lighting:** sliders for the replaced shaders' settings (sun, flashlight,
+  GTAO). Each section shows where its values come from, a Reset for overlay
+  edits, and one line of state (Active / Waiting / missed variants), with the
+  replacement counts in a tooltip.
+- **Photo mode:** free camera, pause, frame step, game speed, time of day.
+- **Advanced:** every registered tweakable grouped by category, with sliders /
+  checkboxes / colour pickers, a filter, "Only changed" and per-item undo.
+  Hover a row for its stock value.
 
 Presets: `[Preset:Name]` sections with optional `Group=` (one active preset per
 group) and `Description=`. `Preset=` takes a comma list; F9 cycles the Quality
@@ -302,9 +309,18 @@ the settings arrive.
 In game, softness 3 cm turns the stair-stepped edge of a door frame's shadow
 into a smooth penumbra. Contact shadows add little: a line where frames meet
 walls, and they dim a highlight at a depth edge. So the presets use softness
-2 cm (Ultra+) and 3 cm (Cinematic) and leave contact off. Night benchmark with
-the flashlight on (presets as a whole): Stock 155.8, Ultra+ 150.5, Cinematic
-143.5 FPS.
+2 cm (Ultra+) and 3 cm (Cinematic) and leave contact off. Its cost hasn't been
+measured on its own: the night benchmarks so far hit a frame-rate cap (Stock
+read 155-156 FPS in every scene).
+
+### Flashlight beams (not changed yet)
+Spotlight beams are `VolumetricLight.shaderbin` "volumetric_light": a half-res
+ray march with four shadowed quality tiers (about 21, 29, 45 and 141 texture
+reads), then a blur and a temporal pass. `[Debug] WatchShaders` showed the
+game already draws the densest tier (#15, 40 KB), with #17 (shadow-map pass),
+#23 (blur) and #25 (light texture). There is no cheaper tier to swap out, so
+better beams mean rebuilding #15 (e.g. at full resolution). Sun shafts are
+`VolumetricLighting_d3t` "raymarchSunlight" and god rays `Godray` "raymarch".
 
 ### Skin and faces
 Characters' skin is `Skin_d3t.shaderbin` (the older `Skin.shaderbin` is never
@@ -333,7 +349,8 @@ game's desaturated grade. The pass already ran, so there's no added cost.
 
 The character light rig is three invisible lights per character: front-left,
 front-right and behind, at 0.31 / 0.31 / 0.05 at night. With equal lights 1 and 2,
-a face is lit evenly from both sides, so the presets use 0.5 / 0.1 at night.
+a face is lit evenly from both sides, so the presets use 0.5 / 0.1 at night
+(Darker Nights, dimmer, 0.2 / 0.04).
 `HBAO:Skin Intensity` and `Eye Intensity` showed no effect from 0 to 1.
 
 Diagnostics:

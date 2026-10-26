@@ -132,11 +132,14 @@ const char* SourceTag(int s) {
     }
 }
 
+const ImVec4 kAccent(1.0f, 0.75f, 0.3f, 1.0f);  // edits, warnings
+const ImVec4 kGood(0.45f, 0.85f, 0.45f, 1.0f);
+
 ImVec4 SourceColor(int s) {
     switch (s) {
         case AWT_SRC_TWEAKS: return ImVec4(0.55f, 0.75f, 1.0f, 1.0f);
         case AWT_SRC_PRESET: return ImVec4(0.75f, 0.6f, 1.0f, 1.0f);
-        case AWT_SRC_OVERLAY: return ImVec4(1.0f, 0.75f, 0.3f, 1.0f);
+        case AWT_SRC_OVERLAY: return kAccent;
         default: return ImVec4(1, 1, 1, 1);
     }
 }
@@ -241,13 +244,7 @@ void DrawFps(const char* name) {
 
 // The everyday part: mod switch and presets. Groups with several presets are
 // exclusive (radio buttons plus a "none" choice); single presets are checkboxes.
-void DrawSimple(const AwtStatus& st) {
-    ImGui::TextDisabled("AWTweaks " AWT_VERSION_STRING);
-    bool on = !st.modOff;
-    if (ImGui::Checkbox("Mod enabled", &on)) g_api.setModOn(on ? 1 : 0);
-    ImGui::SameLine();
-    ImGui::TextDisabled("(F10 compares with stock)");
-
+void DrawPresets(const AwtStatus& st) {
     g_api.getBench(&g_bench);
     int pn = g_api.presets(g_presets.data(), (int)g_presets.size());
     if (pn > (int)g_presets.size()) {
@@ -285,7 +282,7 @@ void DrawSimple(const AwtStatus& st) {
             }
             if (quality) {
                 if (g_bench.running) {
-                    ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Measuring %s (%d of %d)... hold still",
+                    ImGui::TextColored(kAccent, "Measuring %s (%d of %d)... hold still",
                                        g_bench.current, g_bench.stage + 1, g_bench.stages);
                 } else {
                     ImGui::BeginDisabled(!g_bench.available);
@@ -311,10 +308,15 @@ void DrawSimple(const AwtStatus& st) {
     ImGui::EndDisabled();
 
     ImGui::Spacing();
-    if (ImGui::Button("Use these presets at startup")) {
+    char startup[128];
+    snprintf(startup, sizeof(startup), "Start the game with %s", st.preset[0] ? st.preset : "no presets");
+    if (ImGui::Button(startup)) {
         g_lastStartup = g_api.saveStartup() ? "Saved to awtweaks.ini" : "Save failed - see awtweaks.log";
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Writes Preset=%s into awtweaks.ini", st.preset[0] ? st.preset : "None");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Writes Preset=%s into awtweaks.ini, so the game starts with these presets.\n"
+                          "Picking presets here only lasts until the game closes.",
+                          st.preset[0] ? st.preset : "None");
     if (!g_lastStartup.empty()) {
         ImGui::SameLine();
         ImGui::TextDisabled("%s", g_lastStartup.c_str());
@@ -325,7 +327,6 @@ void DrawSimple(const AwtStatus& st) {
 void DrawPhoto() {
     AwtPhoto ph{};
     g_api.photo(&ph);
-    ImGui::SeparatorText("Photo mode");
     if (!ph.freeCamAvailable && !ph.photoAvailable) {
         ImGui::TextDisabled("Off: set Enabled=true under [FreeCamera] / [PhotoMode] in awtweaks.ini and restart.");
         return;
@@ -376,33 +377,15 @@ void DrawPhoto() {
 
 // Expert part: every engine tweakable, collapsed by default.
 void DrawAdvanced(const AwtStatus& st, int n) {
-    char header[128];
-    if (st.overlayEdits)
-        snprintf(header, sizeof(header), "Advanced: individual engine settings  (%d unsaved edit%s)###adv",
-                 st.overlayEdits, st.overlayEdits == 1 ? "" : "s");
-    else
-        snprintf(header, sizeof(header), "Advanced: individual engine settings###adv");
-    if (!ImGui::CollapsingHeader(header)) return;
-
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextDisabled("Raw engine values (%d found so far; more appear as levels load). Edits apply at once "
-                        "and override the presets above until you save or undo them. Hover a name for its stock "
-                        "value; Ctrl+click a slider to type any value. Name colours: ini / preset / edited.", n);
+                        "and override the presets until you save or undo them. Hover a name for its stock "
+                        "value; Ctrl+click a slider to type any value.", n);
     ImGui::PopTextWrapPos();
-
-    ImGui::BeginDisabled(st.overlayEdits == 0);
-    char saveLabel[64];
-    snprintf(saveLabel, sizeof(saveLabel), "Save %d edit(s) to awtweaks.ini", st.overlayEdits);
-    if (ImGui::Button(saveLabel)) {
-        int r = g_api.save();
-        g_lastSave = r < 0 ? "Save failed - see awtweaks.log" : "Saved " + std::to_string(r) + " value(s)";
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Undo all edits")) g_api.reset(nullptr);
-    ImGui::EndDisabled();
-    if (!g_lastSave.empty()) {
+    ImGui::TextDisabled("Name colours:");
+    for (int src : {AWT_SRC_TWEAKS, AWT_SRC_PRESET, AWT_SRC_OVERLAY}) {
         ImGui::SameLine();
-        ImGui::TextDisabled("%s", g_lastSave.c_str());
+        ImGui::TextColored(SourceColor(src), "%s", src == AWT_SRC_TWEAKS ? "[Tweaks]" : src == AWT_SRC_PRESET ? "preset" : "your edit");
     }
 
     ImGui::SetNextItemWidth(AvailWidth() * 0.55f);
@@ -444,95 +427,122 @@ void DrawAdvanced(const AwtStatus& st, int n) {
     ImGui::Unindent(8.0f);
 }
 
-// Sun/moon shadow shader: soft (sun-size) and contact shadows, when [Shaders]
-// ShadowShader=Enhanced has the add-on replacing the game's shader.
-void DrawShadowFx(const AwtStatus& st) {
-    shader_replace::Stats s = shader_replace::GetStats(shader_replace::Family::Shadow);
-    ImGui::SeparatorText("Sun and moon shadows");
+// One replaced-shader effect: its heading, why it's unavailable, a Reset for edits made
+// here, and a one-line state with the details in a tooltip.
+bool EffectHeader(const char* title, shader_replace::Family family, const char* iniKey, const char* what) {
+    shader_replace::Stats s = shader_replace::GetStats(family);
+    ImGui::SeparatorText(title);
     if (s.mode == shader_replace::Mode::Original) {
-        ImGui::TextDisabled("Soft and contact shadows: set [Shaders] ShadowShader=Enhanced in "
-                            "awtweaks.ini and restart the game.");
-        return;
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("Off: set [Shaders] %s=Enhanced in awtweaks.ini and restart the game.", iniKey);
+        ImGui::PopTextWrapPos();
+        return false;
     }
     if (s.mode == shader_replace::Mode::Debug)
-        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Debug test pattern on ([Shaders] ShadowShader=Debug)");
-    ImGui::BeginDisabled(st.modOff || s.mode != shader_replace::Mode::Enhanced);
-    float sun = st.sunSize, contact = st.contactShadows;
-    ImGui::SetNextItemWidth(AvailWidth() * 0.6f);
-    if (ImGui::SliderFloat("Sun size", &sun, 0.0f, 3.0f, sun > 0.0f ? "%.1f deg" : "off (game's filter)",
-                           ImGuiSliderFlags_None))
-        g_api.set("AWTweaks:Sun Size", &sun);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Shadows soften the farther they fall from what casts them, like real sunlight.\n"
-                          "The real sun is 0.5 degrees; larger looks softer. Ctrl+click to type a value.");
-    ImGui::SetNextItemWidth(AvailWidth() * 0.6f);
-    if (ImGui::SliderFloat("Contact shadows", &contact, 0.0f, 1.0f, contact > 0.0f ? "%.2f m" : "off",
-                           ImGuiSliderFlags_None))
-        g_api.set("AWTweaks:Contact Shadows", &contact);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Small sharp shadows where objects meet the ground and walls, traced on screen\n"
-                          "up to this distance towards the sun. Fades out beyond 25-50 m.");
-    ImGui::EndDisabled();
-    ImGui::TextDisabled("%d of %d shadow shaders replaced (%d pipelines)%s", s.variantsReplaced, s.variantsTotal,
-                        s.pipelinesReplaced, s.pipelinesMissed ? ", some missed - see ReShade.log" : "");
-
+        ImGui::TextColored(kAccent, "Debug test pattern on ([Shaders] %s=Debug)", iniKey);
+    return true;
 }
 
-// Ambient occlusion: GTAO in place of the game's HBAO+, when [Shaders] AOShader=Enhanced.
-void DrawAoFx(const AwtStatus& st) {
-    shader_replace::Stats s = shader_replace::GetStats(shader_replace::Family::AO);
-    ImGui::SeparatorText("Ambient occlusion");
-    if (s.mode == shader_replace::Mode::Original) {
-        ImGui::TextDisabled("GTAO: set [Shaders] AOShader=Enhanced in awtweaks.ini and restart the game.");
-        return;
-    }
-    if (s.mode == shader_replace::Mode::Debug)
-        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Debug test pattern on ([Shaders] AOShader=Debug)");
-    ImGui::BeginDisabled(st.modOff);
-    float gtao = st.gtao;
-    ImGui::SetNextItemWidth(AvailWidth() * 0.6f);
-    if (ImGui::SliderFloat("GTAO", &gtao, 0.0f, 3.0f, gtao >= 0.05f ? "strength %.1f" : "off (game's HBAO+)",
-                           ImGuiSliderFlags_None))
-        g_api.set("AWTweaks:GTAO", &gtao);
+void EffectFooter(const AwtStatus& st, shader_replace::Family family, int source, const char* what,
+                  std::initializer_list<const char*> names) {
+    shader_replace::Stats s = shader_replace::GetStats(family);
+    if (st.modOff)
+        ImGui::TextDisabled("Mod off (F10): the game's own %s", what);
+    else if (s.pipelinesMissed)
+        ImGui::TextColored(kAccent, "Not all of the game's %s shaders were replaced - see ReShade.log", what);
+    else if (s.variantsReplaced)
+        ImGui::TextColored(kGood, "Active");
+    else
+        ImGui::TextDisabled("Waiting: the game hasn't loaded its %s shader yet", what);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Ground-truth ambient occlusion: darkens creases and contact points the way\n"
-                          "they really are, without HBAO+'s grey wash on open surfaces or halos\n"
-                          "behind thin objects. 1 matches HBAO+'s darkest shading.");
-    ImGui::EndDisabled();
-    ImGui::TextDisabled("%d of %d AO shaders replaced (%d pipelines)%s", s.variantsReplaced, s.variantsTotal,
-                        s.pipelinesReplaced, s.pipelinesMissed ? ", some missed - see ReShade.log" : "");
+        ImGui::SetTooltip("%d of %d %s shader variants replaced, %d pipeline(s)%s", s.variantsReplaced, s.variantsTotal,
+                          what, s.pipelinesReplaced, s.pipelinesMissed ? "; some missed" : "");
+    const char* from = source == AWT_SRC_OVERLAY ? nullptr : source == AWT_SRC_PRESET ? "from a preset"
+                       : source == AWT_SRC_TWEAKS                                     ? "from [Tweaks]"
+                                                                                      : nullptr;
+    if (from) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%s)", from);
+    }
+    if (source == AWT_SRC_OVERLAY) {
+        ImGui::SameLine();
+        ImGui::PushID(what);
+        if (ImGui::SmallButton("Reset"))
+            for (const char* n : names) g_api.reset(n);
+        ImGui::PopID();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Undo your edits here (back to the preset or [Tweaks] values)");
+    }
 }
 
-// Flashlight (and other shadowed spotlight) shadows, when [Shaders] SpotShader=Enhanced.
-void DrawFlashFx(const AwtStatus& st) {
-    shader_replace::Stats s = shader_replace::GetStats(shader_replace::Family::Spot);
-    ImGui::SeparatorText("Flashlight shadows");
-    if (s.mode == shader_replace::Mode::Original) {
-        ImGui::TextDisabled("Soft and contact shadows: set [Shaders] SpotShader=Enhanced in "
-                            "awtweaks.ini and restart the game.");
-        return;
+bool EffectSlider(const char* label, const char* name, float value, float max, const char* onFormat,
+                  const char* offText, const char* tip) {
+    ImGui::SetNextItemWidth(AvailWidth() * 0.6f);
+    bool changed = ImGui::SliderFloat(label, &value, 0.0f, max, value > 0.0f ? onFormat : offText, ImGuiSliderFlags_None);
+    if (changed) g_api.set(name, &value);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\nCtrl+click to type a value.", tip);
+    return changed;
+}
+
+void DrawLighting(const AwtStatus& st) {
+    using shader_replace::Family;
+    if (EffectHeader("Sun and moon shadows", Family::Shadow, "ShadowShader", "shadow")) {
+        ImGui::BeginDisabled(st.modOff || shader_replace::GetStats(Family::Shadow).mode != shader_replace::Mode::Enhanced);
+        EffectSlider("Sun size", "AWTweaks:Sun Size", st.sunSize, 3.0f, "%.1f deg", "off (game's filter)",
+                     "Shadows soften the farther they fall from what casts them, like real sunlight.\n"
+                     "The real sun is 0.5 degrees; larger looks softer.");
+        EffectSlider("Contact shadows", "AWTweaks:Contact Shadows", st.contactShadows, 1.0f, "%.2f m", "off",
+                     "Small sharp shadows where objects meet the ground and walls, traced on screen\n"
+                     "up to this distance towards the sun. Fades out beyond 25-50 m.");
+        ImGui::EndDisabled();
+        EffectFooter(st, Family::Shadow, st.shadowFxSource, "shadow", {"AWTweaks:Sun Size", "AWTweaks:Contact Shadows"});
     }
-    if (s.mode == shader_replace::Mode::Debug)
-        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Debug test pattern on ([Shaders] SpotShader=Debug)");
-    ImGui::BeginDisabled(st.modOff || s.mode != shader_replace::Mode::Enhanced);
-    float soft = st.flashSoftness, contact = st.flashContact;
-    ImGui::SetNextItemWidth(AvailWidth() * 0.6f);
-    if (ImGui::SliderFloat("Flashlight softness", &soft, 0.0f, 6.0f, soft > 0.0f ? "lens %.1f cm" : "off (game's filter)",
-                           ImGuiSliderFlags_None))
-        g_api.set("AWTweaks:Flashlight Softness", &soft);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Shadows sharp where objects touch, softer the farther they fall, as from a lens\n"
-                          "this wide (radius). Also lamps that cast shadows. Ctrl+click to type a value.");
-    ImGui::SetNextItemWidth(AvailWidth() * 0.6f);
-    if (ImGui::SliderFloat("Flashlight contact shadows", &contact, 0.0f, 1.0f, contact > 0.0f ? "%.2f m" : "off",
-                           ImGuiSliderFlags_None))
-        g_api.set("AWTweaks:Flashlight Contact Shadows", &contact);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Small sharp shadows the shadow map misses, traced on screen up to this distance\n"
-                          "towards the light.");
-    ImGui::EndDisabled();
-    ImGui::TextDisabled("%d of %d spotlight shaders replaced (%d pipelines)%s", s.variantsReplaced, s.variantsTotal,
-                        s.pipelinesReplaced, s.pipelinesMissed ? ", some missed - see ReShade.log" : "");
+    ImGui::Spacing();
+    if (EffectHeader("Flashlight shadows", Family::Spot, "SpotShader", "spotlight")) {
+        ImGui::BeginDisabled(st.modOff || shader_replace::GetStats(Family::Spot).mode != shader_replace::Mode::Enhanced);
+        EffectSlider("Softness", "AWTweaks:Flashlight Softness", st.flashSoftness, 6.0f, "lens %.1f cm",
+                     "off (game's filter)",
+                     "Shadows sharp where objects touch, softer the farther they fall, as from a lens\n"
+                     "this wide (radius). Also lamps that cast shadows.");
+        EffectSlider("Contact shadows##flash", "AWTweaks:Flashlight Contact Shadows", st.flashContact, 1.0f, "%.2f m",
+                     "off",
+                     "Small sharp shadows the shadow map misses, traced on screen up to this distance\n"
+                     "towards the light. Can dim highlights at depth edges.");
+        ImGui::EndDisabled();
+        EffectFooter(st, Family::Spot, st.flashFxSource, "spotlight",
+                     {"AWTweaks:Flashlight Softness", "AWTweaks:Flashlight Contact Shadows"});
+    }
+    ImGui::Spacing();
+    if (EffectHeader("Ambient occlusion", Family::AO, "AOShader", "AO")) {
+        ImGui::BeginDisabled(st.modOff || shader_replace::GetStats(Family::AO).mode != shader_replace::Mode::Enhanced);
+        EffectSlider("GTAO", "AWTweaks:GTAO", st.gtao, 3.0f, "strength %.1f", "off (game's HBAO+)",
+                     "Ground-truth ambient occlusion: darkens creases and contact points the way\n"
+                     "they really are, without HBAO+'s grey wash on open surfaces or halos\n"
+                     "behind thin objects. At 1 creases are a little darker than HBAO+'s, open surfaces lighter.");
+        ImGui::EndDisabled();
+        EffectFooter(st, Family::AO, st.aoFxSource, "AO", {"AWTweaks:GTAO"});
+    }
+}
+
+// Always visible: unsaved edits, wherever they were made, with Save and Undo.
+void DrawEditsBar(const AwtStatus& st) {
+    if (st.overlayEdits) {
+        ImGui::TextColored(kAccent, "%d unsaved change%s", st.overlayEdits, st.overlayEdits == 1 ? "" : "s");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Slider and Advanced edits apply at once but are lost when the game closes\n"
+                              "unless you save them.");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Save to awtweaks.ini")) {
+            int r = g_api.save();
+            g_lastSave = r < 0 ? "Save failed - see awtweaks.log" : "Saved " + std::to_string(r) + " value(s)";
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Undo all")) {
+            g_api.reset(nullptr);
+            g_lastSave.clear();
+        }
+    } else if (!g_lastSave.empty()) {
+        ImGui::TextDisabled("%s", g_lastSave.c_str());
+    }
 }
 
 void DrawOverlay(reshade::api::effect_runtime*) {
@@ -554,17 +564,32 @@ void DrawOverlay(reshade::api::effect_runtime*) {
         n = g_api.snapshot(g_items.data(), (int)g_items.size());
     }
 
-    DrawSimple(st);
-    ImGui::Spacing();
-    DrawPhoto();
-    ImGui::Spacing();
-    DrawShadowFx(st);
-    ImGui::Spacing();
-    DrawFlashFx(st);
-    ImGui::Spacing();
-    DrawAoFx(st);
-    ImGui::Spacing();
-    DrawAdvanced(st, n);
+    bool on = !st.modOff;
+    if (ImGui::Checkbox("Mod enabled", &on)) g_api.setModOn(on ? 1 : 0);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("F10 switches this too: compare with the stock game.");
+    ImGui::SameLine();
+    ImGui::TextDisabled("AWTweaks " AWT_VERSION_STRING "  |  %s", st.modOff ? "stock" : st.preset[0] ? st.preset : "no presets");
+    DrawEditsBar(st);
+
+    if (ImGui::BeginTabBar("awtweaks_tabs", 0)) {
+        if (ImGui::BeginTabItem("Presets", nullptr, 0)) {
+            DrawPresets(st);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Lighting", nullptr, 0)) {
+            DrawLighting(st);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Photo mode", nullptr, 0)) {
+            DrawPhoto();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Advanced", nullptr, 0)) {
+            DrawAdvanced(st, n);
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
 }
 
 }  // namespace

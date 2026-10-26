@@ -62,9 +62,11 @@ While flying the free camera: move with your movement keys or left stick, look
 with the mouse or right stick, **Space** up, **Left Ctrl** down, **Left Shift**
 faster, **Left Alt** slower. Alan stays where he is.
 
-With ReShade, press **Home** and open the **AWTweaks** tab for the same controls
-plus preset descriptions, an FPS comparison of the presets, and an *Advanced*
-section with every engine setting.
+With ReShade, press **Home** and open the **AWTweaks** tab. Its own tabs hold
+*Presets* (with descriptions and an FPS comparison), *Lighting* (sliders for
+the sun, flashlight and ambient-occlusion effects), *Photo mode* and
+*Advanced* (every engine setting). Slider edits apply at once; a bar at the
+top counts unsaved changes and saves them to `awtweaks.ini`.
 
 Every key can be changed in `awtweaks.ini`.
 
@@ -93,14 +95,13 @@ Every key can be changed in `awtweaks.ini`.
 Costs were measured with the overlay's *Measure FPS of each* button on one
 scene (4K, paused, same view): Stock 147.5, Ultra+ 128, Cinematic 120 FPS.
 Without the soft and contact shadows the presets cost about 5% and 10%; GTAO
-costs too little to measure. At night indoors with the flashlight on, where
-the sun shadows cost little, the presets cost about 3% and 8% (Stock 155.8,
-Ultra+ 150.5, Cinematic 143.5 FPS). Your numbers will vary with hardware and
-scene; run the same button to check yours.
+costs too little to measure. Your numbers will vary with hardware and scene;
+run the same button to check yours.
 
 *Darker Nights* can be combined with any of them: less automatic brightening at
 night, no invisible light following Alan, dimmer fill lights on characters, and
-a darker sky and fog. Its character lights replace the presets' night values.
+a darker sky and fog. Its dimmer character lights (key 0.2, fill 0.04) replace
+the presets' night values.
 
 Cinematic is the heaviest. If your frame rate drops, use Ultra+, turn the
 soft and contact shadow sliders down (0 = off), or set `AtlasScale=1` under
